@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.filipp.hermes-workflow-mcp</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/filipp.vysokov/.hermes/scheduled-tasks/workflow-mcp/run.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/filipp.vysokov</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/filipp.vysokov</string>
+    <key>HERMES_HOME</key>
+    <string>/Users/filipp.vysokov/.hermes</string>
+    <key>HERMES_WORKFLOW_MCP_HOST</key>
+    <string>127.0.0.1</string>
+    <key>HERMES_WORKFLOW_MCP_PORT</key>
+    <string>8813</string>
+    <key>HERMES_WORKFLOW_MCP_PYTHON</key>
+    <string>/Users/filipp.vysokov/.hermes/hermes-agent/venv/bin/python</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/filipp.vysokov/.hermes/scheduled-tasks/workflow-mcp/logs/stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/filipp.vysokov/.hermes/scheduled-tasks/workflow-mcp/logs/stderr.log</string>
+</dict>
+</plist>
