@@ -32,7 +32,7 @@ V1 exposes exactly five tools:
 
 - `start_task` — full start packet: bucket, visible statement, skills, Obsidian requirement, context candidates, delegation hint, contract, and finish checklist.
 - `classify_task` — small classification result with confidence, ambiguity, why, and escalation flags.
-- `discover_context` — direct-keyword Obsidian candidates from `Projects/<repo>/`, `Knowledge/`, and `Organization/`; returns paths/reasons/snippets only when requested.
+- `discover_context` — direct-keyword Obsidian candidates from `Projects/<repo>/`, `Knowledge/`, and `Organization/`; accepts either a repo slug or absolute checkout path and returns paths/reasons/snippets only when requested.
 - `suggest_delegation` — concrete `delegate_task` workstreams with valid `task_bucket` enum names.
 - `finish_checklist` — verification/docs/note/memory/skill-maintenance checklist from bucket and changed files.
 

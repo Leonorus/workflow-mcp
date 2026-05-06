@@ -85,6 +85,25 @@ def test_discover_context_scopes_and_caps(tmp_path):
     assert "Projects/hermes-config" in result["searched_roots"]
 
 
+def test_absolute_repo_paths_are_normalized_for_context_and_notes(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    project = vault / "Projects" / "hermes-config"
+    project.mkdir(parents=True)
+    (project / "index.md").write_text("# hermes-config\nworkflow mcp scheduled tasks", encoding="utf-8")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    absolute_repo = "/Users/filipp.vysokov/src/hermes-config"
+    packet = core.start_task("rewrite workflow to use Workflow MCP", repo=absolute_repo, cwd=absolute_repo)
+    assert packet["context_warnings"] == []
+    assert packet["candidate_notes"]
+    assert packet["candidate_notes"][0]["path"].startswith("Projects/hermes-config/")
+    assert packet["suggested_note_path"].startswith("Projects/hermes-config/")
+
+    checklist = core.finish_checklist("script", findings="workflow mcp rewrite", repo=absolute_repo)
+    assert checklist["suggested_note_path"].startswith("Projects/hermes-config/")
+    assert "Projects//" not in checklist["suggested_note_path"]
+
+
 def test_delegation_suggestions_use_valid_buckets():
     for bucket in core.BUCKETS:
         result = core.suggest_delegation("sample prompt", bucket=bucket)

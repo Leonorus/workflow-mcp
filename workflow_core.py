@@ -218,6 +218,27 @@ def _repo_from_cwd(cwd: str | None) -> str | None:
     return name or None
 
 
+def _repo_name(repo: str | None = None, cwd: str | None = None) -> str | None:
+    """Return the Obsidian Projects/<repo> slug for repo/cwd inputs.
+
+    Agents commonly pass either a repo slug ("hermes-config") or an absolute
+    checkout path ("/Users/.../src/hermes-config"). The Workflow MCP context
+    lookup is keyed by the vault project slug, so path-like repo values must be
+    normalized before building Projects/<repo> paths or note suggestions.
+    """
+
+    if repo:
+        raw = repo.strip()
+        if raw:
+            parts = [p for p in raw.replace("\\", "/").split("/") if p]
+            if len(parts) >= 2 and parts[-2].lower() == "projects":
+                return parts[-1]
+            if raw.startswith("~") or raw.startswith("/") or "/" in raw or "\\" in raw:
+                return Path(raw).expanduser().name or None
+            return raw
+    return _repo_from_cwd(cwd)
+
+
 def _validate_bucket(bucket: str) -> str:
     normalized = bucket.strip().lower().replace("-", "_")
     if normalized not in BUCKETS:
@@ -383,7 +404,7 @@ def discover_context(
     if not vault.exists():
         return {"candidates": [], "warnings": [f"vault root not found: {vault}"], "searched_roots": []}
 
-    repo_name = repo or _repo_from_cwd(cwd)
+    repo_name = _repo_name(repo, cwd)
     terms = _tokens(prompt)
     if repo_name:
         terms.update(_tokens(repo_name))
@@ -491,7 +512,7 @@ def start_task(
         classification = classify_task(prompt, cwd=cwd, repo=repo)
         bucket = classification["bucket"]
 
-    repo_name = repo or _repo_from_cwd(cwd)
+    repo_name = _repo_name(repo, cwd)
     context = discover_context(prompt, repo=repo_name, cwd=cwd, max_candidates=8, include_snippets=False)
     delegation = suggest_delegation(prompt, bucket=bucket, cwd=cwd, repo=repo_name)
     finish = finish_checklist(bucket=bucket, changed_files=[], commands_run=[], findings=prompt[:160], repo=repo_name)
@@ -527,7 +548,8 @@ def suggest_delegation(prompt: str, bucket: str | None = None, cwd: str | None =
     if bucket is None:
         bucket = classify_task(prompt, cwd=cwd, repo=repo)["bucket"]
     bucket = _validate_bucket(bucket)
-    base_context = f"Prompt: {prompt}\nRepo: {repo or _repo_from_cwd(cwd) or 'unknown'}\nBucket: {bucket}."
+    repo_name = _repo_name(repo, cwd)
+    base_context = f"Prompt: {prompt}\nRepo: {repo_name or 'unknown'}\nBucket: {bucket}."
     destructive = _contains(prompt.lower(), _DESTRUCTIVE_WORDS)
 
     if bucket == "trivia":
@@ -618,7 +640,7 @@ def finish_checklist(
     bucket = _validate_bucket(bucket)
     changed_files = changed_files or []
     commands_run = commands_run or []
-    repo_name = repo or "repo"
+    repo_name = _repo_name(repo) or "repo"
     today = _dt.datetime.now().strftime("%Y-%m-%d")
     slug = _slug(findings or bucket, fallback=bucket)
     checklist: list[str] = []
