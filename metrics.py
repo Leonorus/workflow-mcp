@@ -45,6 +45,50 @@ def _cwd_basename(cwd: Any) -> str | None:
     return Path(cwd).expanduser().name or None
 
 
+def _service_version() -> str:
+    env_version = os.environ.get("HERMES_WORKFLOW_MCP_VERSION")
+    if env_version:
+        return env_version
+    candidates = [TASK_DIR]
+    source_repo = os.environ.get("HERMES_WORKFLOW_MCP_SOURCE_REPO", "~/src/hermes-config")
+    candidates.append(Path(source_repo).expanduser())
+    for candidate in candidates:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(candidate), "rev-parse", "--short", "HEAD"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        version = proc.stdout.strip()
+        if proc.returncode == 0 and version:
+            try:
+                dirty = subprocess.run(
+                    ["git", "-C", str(candidate), "status", "--porcelain", "--", "scheduled-tasks/workflow-mcp"],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    timeout=2,
+                )
+            except (OSError, subprocess.SubprocessError):
+                dirty = None
+            suffix = "-dirty" if dirty is not None and dirty.stdout.strip() else ""
+            return f"{version}{suffix}"
+    try:
+        mtime = int(max(path.stat().st_mtime for path in TASK_DIR.glob("*.py")))
+    except (OSError, ValueError):
+        return "unknown"
+    return f"live-mtime-{mtime}"
+
+
+SERVICE_VERSION = _service_version()
+
+
 def _result_summary(result: Any) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {}
@@ -54,6 +98,8 @@ def _result_summary(result: Any) -> dict[str, Any]:
             out[key] = result[key]
     if "candidates" in result and isinstance(result["candidates"], list):
         out["candidate_count"] = len(result["candidates"])
+    if "escalation_flags" in result and isinstance(result["escalation_flags"], list):
+        out["escalation_flags_count"] = len(result["escalation_flags"])
     if "warnings" in result and isinstance(result["warnings"], list):
         out["warnings_count"] = len(result["warnings"])
     if "checklist" in result and isinstance(result["checklist"], list):
@@ -88,6 +134,7 @@ def record_call(tool: str, started: float, success: bool, args: dict[str, Any] |
         "tool": tool,
         "success": success,
         "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+        "service_version": SERVICE_VERSION,
     }
     event.update(_prompt_summary(args.get("prompt")))
     if args.get("session_id"):
@@ -121,4 +168,5 @@ def health_stats() -> dict[str, Any]:
         "error_count": _ERROR_COUNT,
         "last_error_type": _LAST_ERROR_TYPE,
         "metrics_path": str(CALLS_PATH),
+        "service_version": SERVICE_VERSION,
     }

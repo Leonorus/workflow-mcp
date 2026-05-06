@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,6 +86,62 @@ def test_discover_context_scopes_and_caps(tmp_path):
     assert "Projects/hermes-config" in result["searched_roots"]
 
 
+def test_workflow_namespace_terms_are_searchable():
+    tokens = core._tokens("hermes repo task code workflow mcp")
+    assert {"hermes", "repo", "task", "code", "workflow", "mcp"} <= tokens
+
+
+def test_discover_context_can_inline_top_candidate_content(tmp_path):
+    vault = tmp_path / "vault"
+    project = vault / "Projects" / "hermes-config"
+    project.mkdir(parents=True)
+    body = "Workflow MCP effectiveness roadmap body with enough text to truncate."
+    (project / "workflow-mcp.md").write_text(body, encoding="utf-8")
+    (project / "other.md").write_text("Workflow MCP secondary note", encoding="utf-8")
+
+    result = core.discover_context(
+        "workflow mcp effectiveness",
+        repo="hermes-config",
+        vault_root=str(vault),
+        max_candidates=2,
+        inline_top_n=1,
+        inline_max_chars=24,
+    )
+
+    assert len(result["candidates"]) == 2
+    assert result["candidates"][0]["content"] == body[:24]
+    assert result["candidates"][0]["content_truncated"] is True
+    assert "content" not in result["candidates"][1]
+
+    long_body = "UniqueLongMarker " + ("x" * 13000)
+    (project / "unique-long-marker.md").write_text(long_body, encoding="utf-8")
+    long_result = core.discover_context(
+        "unique long marker",
+        repo="hermes-config",
+        vault_root=str(vault),
+        max_candidates=1,
+        inline_top_n=1,
+        inline_max_chars=12000,
+    )
+    assert long_result["candidates"][0]["content_chars"] == 12000
+    assert long_result["candidates"][0]["content_truncated"] is True
+
+
+def test_context_index_refreshes_after_file_change(tmp_path):
+    vault = tmp_path / "vault"
+    project = vault / "Projects" / "hermes-config"
+    project.mkdir(parents=True)
+    note = project / "workflow-mcp.md"
+    note.write_text("Workflow MCP old topic", encoding="utf-8")
+
+    first = core.discover_context("old topic", repo="hermes-config", vault_root=str(vault))
+    assert first["candidates"]
+
+    note.write_text("Workflow MCP new unique marker", encoding="utf-8")
+    second = core.discover_context("unique marker", repo="hermes-config", vault_root=str(vault))
+    assert second["candidates"]
+
+
 def test_absolute_repo_paths_are_normalized_for_context_and_notes(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     project = vault / "Projects" / "hermes-config"
@@ -109,11 +166,55 @@ def test_delegation_suggestions_use_valid_buckets():
         result = core.suggest_delegation("sample prompt", bucket=bucket)
         for task in result["tasks"]:
             assert task["task_bucket"] in core.DELEGATE_TASK_BUCKETS
-    debug = core.suggest_delegation("fix broken release pipeline", bucket="debug")
+    debug = core.suggest_delegation('fix broken release pipeline error "screenshot artifact missing" in .gitlab-ci.yml', bucket="debug")
     assert debug["should_delegate"] is True
-    assert any("failure" in t["goal"].lower() for t in debug["tasks"])
+    assert debug["specialization"] == "specific"
+    assert ".gitlab-ci.yml" in debug["extracted_signals"]["paths"]
+    assert any(".gitlab-ci.yml" in t["goal"] for t in debug["tasks"])
+    assert any("screenshot artifact missing" in t["goal"] for t in debug["tasks"])
     research = core.suggest_delegation("compare workflow options", bucket="research")
     assert len(research["tasks"]) >= 2
+
+
+def test_start_task_can_return_selected_fields(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    (vault / "Projects" / "hermes-config").mkdir(parents=True)
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    packet = core.start_task(
+        "compare workflow MCP options",
+        repo="hermes-config",
+        fields=["bucket", "visible_statement"],
+    )
+    assert set(packet) == {"bucket", "visible_statement"}
+    assert packet["bucket"] == "research"
+
+
+def test_repo_from_missing_relative_cwd_returns_none():
+    assert core._repo_from_cwd("relative/missing/path") is None
+
+
+def test_finish_checklist_can_detect_git_changes(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "README.md").write_text("initial", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    (repo / "scheduled-tasks").mkdir()
+    (repo / "scheduled-tasks" / "run.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (repo / "config.yaml").write_text("mcp_servers: {}\n", encoding="utf-8")
+
+    result = core.finish_checklist("script", repo="hermes-config", repo_root=str(repo), commands_run=["pytest"])
+    joined = "\n".join(result["checklist"])
+    assert "scheduled-tasks/run.sh" in result["changed_files_detected"]
+    assert "config.yaml" in result["changed_files_detected"]
+    assert result["changed_files_source"] == "git"
+    assert "zsh -n" in joined
+    assert "hermes config check" in joined
 
 
 def test_finish_checklist_rules():

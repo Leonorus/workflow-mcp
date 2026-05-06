@@ -28,13 +28,23 @@ Fresh Hermes sessions need `/reload-mcp` or restart to see newly registered tool
 
 ## MCP tools
 
-V1 exposes exactly five tools:
+V1 exposes five MCP tools over nine workflow buckets (`trivia`, `light_ops`, `heavy_ops`, `app_code`, `script`, `debug`, `research`, `repo_maintenance`, `ambiguous`):
 
-- `start_task` — full start packet: bucket, visible statement, skills, Obsidian requirement, context candidates, delegation hint, contract, and finish checklist.
+- `start_task` — full start packet: bucket, visible statement, skills, Obsidian requirement, context candidates, delegation hint, contract, and finish checklist. Optional `fields` returns only requested top-level fields to reduce token use and avoid unused expensive sections.
 - `classify_task` — small classification result with confidence, ambiguity, why, and escalation flags.
-- `discover_context` — direct-keyword Obsidian candidates from `Projects/<repo>/`, `Knowledge/`, and `Organization/`; accepts either a repo slug or absolute checkout path and returns paths/reasons/snippets only when requested.
-- `suggest_delegation` — concrete `delegate_task` workstreams with valid `task_bucket` enum names.
-- `finish_checklist` — verification/docs/note/memory/skill-maintenance checklist from bucket and changed files.
+- `discover_context` — direct-keyword Obsidian candidates from `Projects/<repo>/`, `Knowledge/`, and `Organization/`; accepts either a repo slug or absolute checkout path and returns paths/reasons/snippets only when requested. Optional `inline_top_n` and `inline_max_chars` inline the top candidates' note bodies to avoid duplicate reads.
+- `suggest_delegation` — prompt-aware `delegate_task` workstreams with valid `task_bucket` enum names plus extracted paths/tickets/error text when available.
+- `finish_checklist` — verification/docs/note/memory/skill-maintenance checklist from bucket and changed files. Optional `repo_root` + `auto_detect_changes` asks git for changed/untracked paths instead of trusting caller-supplied `changed_files`.
+
+## Telemetry
+
+The MCP wrapper records privacy-safe per-call JSONL metrics to:
+
+```text
+~/.hermes/scheduled-tasks/workflow-mcp/logs/calls.jsonl
+```
+
+Raw prompts are not logged. Events include prompt hash/word count, tool name, success, duration, service version, bucket/confidence where present, escalation flag count, candidate/checklist/task counts, selected fields, and error type. `/health` includes uptime, request count, error count, last error type, service version, and metrics path.
 
 ## Local verification
 

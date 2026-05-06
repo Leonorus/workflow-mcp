@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -138,9 +139,9 @@ BUCKET_CONTRACTS: dict[str, dict[str, Any]] = {
 
 _STOPWORDS = {
     "about", "after", "again", "against", "also", "and", "any", "are", "ask", "before", "being", "can",
-    "code", "could", "did", "does", "doing", "done", "for", "from", "get", "has", "have", "hermes", "how",
-    "into", "its", "just", "let", "make", "more", "need", "our", "out", "over", "please", "repo", "run",
-    "some", "task", "that", "the", "then", "this", "through", "use", "using", "want", "what", "when", "where",
+    "could", "did", "does", "doing", "done", "for", "from", "get", "has", "have", "how",
+    "into", "its", "just", "let", "make", "more", "need", "our", "out", "over", "please", "run",
+    "some", "that", "the", "then", "this", "through", "use", "using", "want", "what", "when", "where",
     "with", "work", "would", "you", "your",
 }
 
@@ -211,11 +212,14 @@ def _tokens(text: str) -> set[str]:
 def _repo_from_cwd(cwd: str | None) -> str | None:
     if not cwd:
         return None
+    path = Path(cwd).expanduser()
+    if not path.is_absolute() or not path.exists():
+        return None
     try:
-        name = Path(cwd).expanduser().resolve().name
+        resolved = path.resolve(strict=True)
     except OSError:
-        name = Path(cwd).expanduser().name
-    return name or None
+        return None
+    return resolved.name or None
 
 
 def _repo_name(repo: str | None = None, cwd: str | None = None) -> str | None:
@@ -345,7 +349,10 @@ def classify_task(prompt: str, cwd: str | None = None, repo: str | None = None) 
         reasons[top_bucket].append("ops/config signal appears small and low-risk")
 
     margin = max(0, top_score - second_score)
-    confidence = round(min(0.95, 0.50 + 0.05 * top_score + 0.04 * margin), 2)
+    confidence_cap = 0.85 if top_bucket != "ambiguous" else 0.70
+    if top_bucket in {"heavy_ops", "debug"} and escalation_flags:
+        confidence_cap = 0.90
+    confidence = round(min(confidence_cap, 0.50 + 0.04 * top_score + 0.03 * margin), 2)
     confidence = max(confidence, 0.55 if top_bucket != "ambiguous" else 0.45)
     why = reasons[top_bucket] or [BUCKET_CONTRACTS[top_bucket]["first_move"]]
 
@@ -387,6 +394,62 @@ def _snippet_for(text: str, terms: set[str], max_len: int = 220) -> str:
     return " ".join(text[start:end].split())
 
 
+_CONTEXT_INDEX_CACHE: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
+_CONTEXT_INDEX_MAX_CHARS = 12000
+
+
+def _clamp_int(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, int(value)))
+
+
+def _context_index_entries(vault: Path, roots: list[Path], warnings: list[str]) -> tuple[list[dict[str, Any]], bool]:
+    existing_roots = [root for root in roots if root.exists()]
+    cache_key = (str(vault), tuple(str(root) for root in existing_roots))
+    signature: list[tuple[str, int, int]] = []
+    paths: list[Path] = []
+    for root in existing_roots:
+        for path in sorted(root.rglob("*.md")):
+            if "Clippings" in path.parts:
+                continue
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                warnings.append(f"could not stat {path.relative_to(vault)}: {exc}")
+                continue
+            rel = str(path.relative_to(vault))
+            signature.append((rel, stat.st_mtime_ns, stat.st_size))
+            paths.append(path)
+
+    cached = _CONTEXT_INDEX_CACHE.get(cache_key)
+    signature_tuple = tuple(signature)
+    if cached and cached.get("signature") == signature_tuple:
+        return cached["entries"], True
+
+    entries: list[dict[str, Any]] = []
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            warnings.append(f"could not read {path.relative_to(vault)}: {exc}")
+            continue
+        rel = str(path.relative_to(vault))
+        text_prefix = text[:_CONTEXT_INDEX_MAX_CHARS]
+        entries.append(
+            {
+                "path": path,
+                "rel": rel,
+                "lower_name": rel.lower(),
+                "text_prefix": text_prefix,
+                "lower_text": text_prefix.lower(),
+                "generated_index": path.name == "index.md" and "generated_by:" in text[:500],
+                "is_index": path.name == "index.md",
+                "size": len(text),
+            }
+        )
+    _CONTEXT_INDEX_CACHE[cache_key] = {"signature": signature_tuple, "entries": entries}
+    return entries, False
+
+
 def discover_context(
     prompt: str,
     repo: str | None = None,
@@ -394,6 +457,8 @@ def discover_context(
     vault_root: str | None = None,
     max_candidates: int = 8,
     include_snippets: bool = False,
+    inline_top_n: int = 0,
+    inline_max_chars: int = 4000,
 ) -> dict[str, Any]:
     """Return direct-keyword Obsidian note candidates without broad note dumps."""
 
@@ -423,61 +488,59 @@ def discover_context(
     if not terms:
         return {"candidates": [], "warnings": warnings + ["no searchable terms derived from prompt"], "searched_roots": searched_roots}
 
-    scored: list[tuple[int, dict[str, Any]]] = []
-    for root in roots:
-        if not root.exists():
+    max_candidates = _clamp_int(max_candidates, 1, 50)
+    inline_top_n = _clamp_int(inline_top_n, 0, 3)
+    inline_max_chars = _clamp_int(inline_max_chars, 1, 12000)
+
+    entries, index_used = _context_index_entries(vault, roots, warnings)
+    scored: list[tuple[int, dict[str, Any], str, int]] = []
+    for entry in entries:
+        name_hits = {t for t in terms if t in entry["lower_name"]}
+        content_hits = {t for t in terms if t in entry["lower_text"]}
+        matched = sorted(name_hits | content_hits)
+        if not matched:
             continue
-        for path in sorted(root.rglob("*.md")):
-            if "Clippings" in path.parts:
-                continue
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                warnings.append(f"could not read {path.relative_to(vault)}: {exc}")
-                continue
-            rel = str(path.relative_to(vault))
-            lower_name = rel.lower()
-            lower_text = text[:12000].lower()
-            name_hits = {t for t in terms if t in lower_name}
-            content_hits = {t for t in terms if t in lower_text}
-            matched = sorted(name_hits | content_hits)
-            if not matched:
-                continue
-            generated_index = path.name == "index.md" and "generated_by:" in text[:500]
-            score = len(name_hits) * 4 + len(content_hits)
-            if path.name == "index.md":
-                score += 2
-            if generated_index and not name_hits and len(content_hits) < 2:
-                continue
-            if generated_index:
-                score -= 1
-            if score <= 0:
-                continue
-            strength = "high" if score >= 8 else "medium" if score >= 4 else "low"
-            reason = "direct keyword overlap"
-            if path.name == "index.md":
-                reason = "project/layer index keyword overlap"
-            item: dict[str, Any] = {
-                "path": rel,
-                "reason": reason,
-                "strength": strength,
-                "matched_terms": matched[:12],
-            }
-            if include_snippets:
-                item["snippet"] = _snippet_for(text, set(matched))
-            scored.append((score, item))
+        score = len(name_hits) * 4 + len(content_hits)
+        if entry["is_index"]:
+            score += 2
+        if entry["generated_index"] and not name_hits and len(content_hits) < 2:
+            continue
+        if entry["generated_index"]:
+            score -= 1
+        if score <= 0:
+            continue
+        strength = "high" if score >= 8 else "medium" if score >= 4 else "low"
+        reason = "project/layer index keyword overlap" if entry["is_index"] else "direct keyword overlap"
+        item: dict[str, Any] = {
+            "path": entry["rel"],
+            "reason": reason,
+            "strength": strength,
+            "matched_terms": matched[:12],
+        }
+        if include_snippets:
+            item["snippet"] = _snippet_for(entry["text_prefix"], set(matched))
+        scored.append((score, item, entry["text_prefix"], entry["size"]))
 
     seen: set[str] = set()
-    for _, item in sorted(scored, key=lambda pair: (-pair[0], pair[1]["path"])):
+    for _, item, text, full_size in sorted(scored, key=lambda pair: (-pair[0], pair[1]["path"])):
         if item["path"] in seen:
             continue
         seen.add(item["path"])
+        if len(candidates) < inline_top_n:
+            item["content"] = text[:inline_max_chars]
+            item["content_truncated"] = full_size > inline_max_chars
+            item["content_chars"] = len(item["content"])
         candidates.append(item)
         if len(candidates) >= max_candidates:
             break
 
-    return {"candidates": candidates, "warnings": warnings, "searched_roots": searched_roots}
-
+    return {
+        "candidates": candidates,
+        "warnings": warnings,
+        "searched_roots": searched_roots,
+        "index_used": index_used,
+        "indexed_files": len(entries),
+    }
 
 def required_skills_for(prompt: str, bucket: str) -> list[str]:
     text = prompt.lower()
@@ -500,6 +563,7 @@ def start_task(
     repo: str | None = None,
     session_id: str | None = None,
     already_classified_bucket: str | None = None,
+    fields: list[str] | None = None,
 ) -> dict[str, Any]:
     if already_classified_bucket:
         bucket = _validate_bucket(already_classified_bucket)
@@ -513,11 +577,18 @@ def start_task(
         bucket = classification["bucket"]
 
     repo_name = _repo_name(repo, cwd)
-    context = discover_context(prompt, repo=repo_name, cwd=cwd, max_candidates=8, include_snippets=False)
-    delegation = suggest_delegation(prompt, bucket=bucket, cwd=cwd, repo=repo_name)
-    finish = finish_checklist(bucket=bucket, changed_files=[], commands_run=[], findings=prompt[:160], repo=repo_name)
+    need_fields = set(fields) if fields is not None else None
+    context = {"candidates": [], "warnings": []}
+    if need_fields is None or need_fields & {"candidate_notes", "context_warnings"}:
+        context = discover_context(prompt, repo=repo_name, cwd=cwd, max_candidates=8, include_snippets=False)
+    delegation = {"should_delegate": False, "tasks": [], "warnings": [], "why": "not requested"}
+    if need_fields is None or need_fields & {"delegation_should_be_considered", "delegation_hint"}:
+        delegation = suggest_delegation(prompt, bucket=bucket, cwd=cwd, repo=repo_name)
+    finish = {"checklist": [], "suggested_note_path": None}
+    if need_fields is None or need_fields & {"finish_checklist", "suggested_note_path"}:
+        finish = finish_checklist(bucket=bucket, changed_files=[], commands_run=[], findings=prompt[:160], repo=repo_name)
 
-    return {
+    packet = {
         "bucket": bucket,
         "visible_statement": classification["visible_statement"],
         "confidence": classification["confidence"],
@@ -535,6 +606,10 @@ def start_task(
         "suggested_note_path": finish.get("suggested_note_path"),
         "session_id": session_id,
     }
+    if fields is not None:
+        requested = [field for field in fields if field in packet]
+        return {field: packet[field] for field in requested}
+    return packet
 
 
 def _task(goal: str, context: str, toolsets: list[str], bucket: str, reasoning_effort: str | None = None) -> dict[str, Any]:
@@ -544,90 +619,123 @@ def _task(goal: str, context: str, toolsets: list[str], bucket: str, reasoning_e
     return item
 
 
+def _extract_delegation_signals(prompt: str) -> dict[str, list[str]]:
+    paths = sorted(set(re.findall(r"(?<![A-Za-z0-9_])(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+(?:\.(?:py|sh|zsh|yaml|yml|tf|tfvars|md|json|toml|plist|go|ts|tsx|js|jsx)|Dockerfile|dockerfile)\b", prompt)))
+    tickets = sorted(set(re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", prompt)))
+    quoted = [item.strip() for item in re.findall(r"['\"]([^'\"]{4,160})['\"]", prompt) if item.strip()]
+    error_lines = []
+    for line in prompt.splitlines():
+        lowered = line.lower()
+        if any(word in lowered for word in ("error", "failed", "failure", "traceback", "timeout", "exception")):
+            error_lines.append(line.strip()[:180])
+    return {"paths": paths[:8], "tickets": tickets[:6], "quoted": quoted[:5], "errors": error_lines[:5]}
+
+
+def _signal_summary(signals: dict[str, list[str]]) -> str:
+    parts: list[str] = []
+    if signals["paths"]:
+        parts.append("paths: " + ", ".join(signals["paths"]))
+    if signals["tickets"]:
+        parts.append("tickets: " + ", ".join(signals["tickets"]))
+    if signals["quoted"]:
+        parts.append("quoted/error text: " + "; ".join(signals["quoted"]))
+    if signals["errors"]:
+        parts.append("error lines: " + "; ".join(signals["errors"]))
+    return " | ".join(parts)
+
+
+def _delegation_result(should_delegate: bool, why: str, tasks: list[dict[str, Any]], warnings: list[str], signals: dict[str, list[str]]) -> dict[str, Any]:
+    return {
+        "should_delegate": should_delegate,
+        "why": why,
+        "tasks": tasks,
+        "warnings": warnings,
+        "specialization": "specific" if any(signals.values()) else "generic",
+        "extracted_signals": signals,
+    }
+
+
 def suggest_delegation(prompt: str, bucket: str | None = None, cwd: str | None = None, repo: str | None = None) -> dict[str, Any]:
     if bucket is None:
         bucket = classify_task(prompt, cwd=cwd, repo=repo)["bucket"]
     bucket = _validate_bucket(bucket)
     repo_name = _repo_name(repo, cwd)
-    base_context = f"Prompt: {prompt}\nRepo: {repo_name or 'unknown'}\nBucket: {bucket}."
+    signals = _extract_delegation_signals(prompt)
+    summary = _signal_summary(signals)
+    context_lines = [f"Prompt: {prompt}", f"Repo: {repo_name or 'unknown'}", f"Bucket: {bucket}."]
+    if summary:
+        context_lines.append(f"Extracted signals: {summary}")
+    base_context = "\n".join(context_lines)
+    focus = f" ({summary})" if summary else ""
     destructive = _contains(prompt.lower(), _DESTRUCTIVE_WORDS)
 
     if bucket == "trivia":
-        return {"should_delegate": False, "why": "Trivia work is faster and safer direct.", "tasks": [], "warnings": []}
+        return _delegation_result(False, "Trivia work is faster and safer direct.", [], [], signals)
     if bucket == "ambiguous":
-        return {"should_delegate": False, "why": "Clarify scope before spawning children.", "tasks": [], "warnings": ["ambiguous_scope"]}
+        return _delegation_result(False, "Clarify scope before spawning children.", [], ["ambiguous_scope"], signals)
     if bucket == "light_ops":
-        return {
-            "should_delegate": False,
-            "why": "Light Ops is usually a single surgical edit; consider only a cheap validator.",
-            "tasks": [_task("Validate the proposed small ops/config change for syntax and convention fit", base_context, ["terminal", "file"], "light_ops", "medium")],
-            "warnings": [],
-        }
+        return _delegation_result(False, "Light Ops is usually a single surgical edit; consider only a cheap validator.", [_task(f"Validate the proposed small ops/config change for syntax and convention fit{focus}", base_context, ["terminal", "file"], "light_ops", "medium")], [], signals)
     if bucket == "script":
-        return {
-            "should_delegate": True,
-            "why": "Non-trivial script/service work benefits from one independent reviewer after implementation.",
-            "tasks": [_task("Review script/service implementation for idempotency, launch/runtime safety, and smoke-test coverage", base_context, ["terminal", "file"], "script", "medium")],
-            "warnings": ["parent_keeps_launchctl_and_config_mutations"] if destructive else [],
-        }
+        return _delegation_result(True, "Non-trivial script/service work benefits from one independent reviewer after implementation.", [_task(f"Review script/service implementation for idempotency, launch/runtime safety, and smoke-test coverage{focus}", base_context, ["terminal", "file"], "script", "medium")], ["parent_keeps_launchctl_and_config_mutations"] if destructive else [], signals)
     if bucket == "research":
-        return {
-            "should_delegate": True,
-            "why": "Research can split into upstream/source, local context, and prior-knowledge streams.",
-            "tasks": [
-                _task("Research upstream/source documentation relevant to the decision", base_context, ["web", "terminal", "file"], "research", "medium"),
-                _task("Inspect local repo/config context and summarize constraints", base_context, ["terminal", "file"], "research", "medium"),
-                _task("Search prior Obsidian/project knowledge for directly relevant notes", base_context, ["file"], "research", "medium"),
-            ],
-            "warnings": [],
-        }
+        return _delegation_result(True, "Research can split into upstream/source, local context, and prior-knowledge streams.", [
+            _task(f"Research upstream/source documentation relevant to the decision{focus}", base_context, ["web", "terminal", "file"], "research", "medium"),
+            _task(f"Inspect local repo/config context and summarize constraints{focus}", base_context, ["terminal", "file"], "research", "medium"),
+            _task(f"Search prior Obsidian/project knowledge for directly relevant notes{focus}", base_context, ["file"], "research", "medium"),
+        ], [], signals)
     if bucket == "app_code":
-        return {
-            "should_delegate": True,
-            "why": "App code usually benefits from focused implementation plus spec/quality review on independent modules.",
-            "tasks": [
-                _task("Inspect existing test shape and propose the smallest targeted test plan", base_context, ["terminal", "file"], "app_code", "medium"),
-                _task("Review implementation for spec compliance and code quality after parent/implementer changes", base_context, ["terminal", "file"], "app_code", "medium"),
-            ],
-            "warnings": ["avoid_parallel_implementers_on_same_files"],
-        }
+        return _delegation_result(True, "App code usually benefits from focused implementation plus spec/quality review on independent modules.", [
+            _task(f"Inspect existing test shape and propose the smallest targeted test plan{focus}", base_context, ["terminal", "file"], "app_code", "medium"),
+            _task(f"Review implementation for spec compliance and code quality after parent/implementer changes{focus}", base_context, ["terminal", "file"], "app_code", "medium"),
+        ], ["avoid_parallel_implementers_on_same_files"], signals)
     if bucket == "debug":
-        return {
-            "should_delegate": True,
-            "why": "Unclear bugs need independent reproduction/log inspection before fixing.",
-            "tasks": [
-                _task("Independently reproduce or observe the exact failure and list falsifiable hypotheses", base_context, ["terminal", "file"], "debug", "high"),
-                _task("Inspect code/config paths related to the failure and propose verification commands", base_context, ["terminal", "file"], "debug", "high"),
-            ],
-            "warnings": [],
-        }
+        return _delegation_result(True, "Unclear bugs need independent reproduction/log inspection before fixing.", [
+            _task(f"Independently reproduce or observe the exact failure and list falsifiable hypotheses{focus}", base_context, ["terminal", "file"], "debug", "high"),
+            _task(f"Inspect code/config paths related to the failure and propose verification commands{focus}", base_context, ["terminal", "file"], "debug", "high"),
+        ], [], signals)
     if bucket == "heavy_ops":
-        return {
-            "should_delegate": True,
-            "why": "Heavy Ops should parallelize read-only discovery, risk review, and validation planning; parent keeps applies.",
-            "tasks": [
-                _task("Read-only discovery: identify blast radius, owners, and affected manifests/services", base_context, ["terminal", "file"], "heavy_ops", "high"),
-                _task("Risk review: check prod/secrets/network/rollback boundaries and failure modes", base_context, ["terminal", "file"], "heavy_ops", "high"),
-                _task("Validation plan: enumerate lint/render/dry-run/smoke checks before any apply", base_context, ["terminal", "file"], "heavy_ops", "medium"),
-            ],
-            "warnings": ["parent_keeps_destructive_actions", "dry_run_before_apply"],
-        }
+        return _delegation_result(True, "Heavy Ops should parallelize read-only discovery, risk review, and validation planning; parent keeps applies.", [
+            _task(f"Read-only discovery: identify blast radius, owners, and affected manifests/services{focus}", base_context, ["terminal", "file"], "heavy_ops", "high"),
+            _task(f"Risk review: check prod/secrets/network/rollback boundaries and failure modes{focus}", base_context, ["terminal", "file"], "heavy_ops", "high"),
+            _task(f"Validation plan: enumerate lint/render/dry-run/smoke checks before any apply{focus}", base_context, ["terminal", "file"], "heavy_ops", "medium"),
+        ], ["parent_keeps_destructive_actions", "dry_run_before_apply"], signals)
     if bucket == "repo_maintenance":
-        return {
-            "should_delegate": True,
-            "why": "Repo maintenance splits cleanly across CI/deps/docs/tests/release metadata inspectors.",
-            "tasks": [
-                _task("Inspect CI/dependency/release metadata changes and validation commands", base_context, ["terminal", "file"], "repo_maintenance", "medium"),
-                _task("Review docs/config convention impacts and unrelated local diffs", base_context, ["terminal", "file"], "repo_maintenance", "medium"),
-            ],
-            "warnings": ["preserve_unrelated_user_changes"],
-        }
+        return _delegation_result(True, "Repo maintenance splits cleanly across CI/deps/docs/tests/release metadata inspectors.", [
+            _task(f"Inspect CI/dependency/release metadata changes and validation commands{focus}", base_context, ["terminal", "file"], "repo_maintenance", "medium"),
+            _task(f"Review docs/config convention impacts and unrelated local diffs{focus}", base_context, ["terminal", "file"], "repo_maintenance", "medium"),
+        ], ["preserve_unrelated_user_changes"], signals)
     raise AssertionError(f"unhandled bucket {bucket}")
-
 
 def _slug(text: str, fallback: str = "workflow-task") -> str:
     words = re.findall(r"[A-Za-z0-9]+", text.lower())[:8]
     return "-".join(words) or fallback
+
+
+def _git_changed_files(repo_root: str | None) -> tuple[list[str], list[str]]:
+    if not repo_root:
+        return [], []
+    root = Path(repo_root).expanduser()
+    warnings: list[str] = []
+    if not root.exists() or not root.is_dir():
+        return [], [f"repo_root not found or not a directory: {root}"]
+
+    changed: list[str] = []
+    commands = [
+        ["git", "-C", str(root), "diff", "--name-only", "HEAD"],
+        ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard"],
+    ]
+    for cmd in commands:
+        try:
+            proc = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError) as exc:
+            warnings.append(f"could not run {' '.join(cmd[:4])}: {exc}")
+            continue
+        if proc.returncode != 0:
+            stderr = " ".join(proc.stderr.split())[:240]
+            warnings.append(f"git change detection failed for {root}: {stderr or proc.returncode}")
+            continue
+        changed.extend(line.strip() for line in proc.stdout.splitlines() if line.strip())
+    return sorted(dict.fromkeys(changed)), warnings
 
 
 def finish_checklist(
@@ -636,11 +744,26 @@ def finish_checklist(
     commands_run: list[str] | None = None,
     findings: str | None = None,
     repo: str | None = None,
+    repo_root: str | None = None,
+    auto_detect_changes: bool = True,
 ) -> dict[str, Any]:
     bucket = _validate_bucket(bucket)
-    changed_files = changed_files or []
+    caller_changed_files = changed_files or []
+    detected_files: list[str] = []
+    git_warnings: list[str] = []
+    if auto_detect_changes and repo_root:
+        detected_files, git_warnings = _git_changed_files(repo_root)
+    changed_files = sorted(dict.fromkeys([*caller_changed_files, *detected_files]))
+    if detected_files and caller_changed_files:
+        changed_files_source = "git+caller"
+    elif detected_files:
+        changed_files_source = "git"
+    elif caller_changed_files:
+        changed_files_source = "caller"
+    else:
+        changed_files_source = "none"
     commands_run = commands_run or []
-    repo_name = _repo_name(repo) or "repo"
+    repo_name = _repo_name(repo, repo_root) or "repo"
     today = _dt.datetime.now().strftime("%Y-%m-%d")
     slug = _slug(findings or bucket, fallback=bucket)
     checklist: list[str] = []
@@ -688,6 +811,9 @@ def finish_checklist(
         "note_action": note_action,
         "note_rule": note_rule,
         "suggested_note_path": None if note_action == "none" else f"Projects/{repo_name}/{today}-{slug}.md",
+        "changed_files_detected": changed_files,
+        "changed_files_source": changed_files_source,
+        "git_warnings": git_warnings,
         "checklist": checklist,
     }
 
