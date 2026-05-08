@@ -10,7 +10,7 @@ import sys
 TASK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TASK_DIR))
 
-from workflow_core import classify_task, finish_checklist, start_task, suggest_delegation  # noqa: E402
+from workflow_core import classify_task, finish_checklist, start_task, suggest_delegation, validate_surfaces  # noqa: E402
 
 CASES = [
     ("debug", lambda: classify_task("fix failing test in hermes-agent")),
@@ -42,7 +42,15 @@ def main() -> int:
         repo="hermes-config",
     )
     assert checklist["note_action"] == "write_raw_note", checklist
-    print(json.dumps({"classifications": out, "start_task_bucket": packet["bucket"], "checklist_items": len(checklist["checklist"])}, indent=2))
+    surfaces = validate_surfaces(repo_root=str(TASK_DIR.parents[1]), mirror_root=str(TASK_DIR), health_url="http://127.0.0.1:8813/health")
+    assert surfaces["status"] in {"ok", "warn", "error"}, surfaces
+    print(json.dumps({
+        "classifications": out,
+        "start_task_bucket": packet["bucket"],
+        "checklist_items": len(checklist["checklist"]),
+        "surface_checks": len(surfaces["checks"]),
+        "surface_status": surfaces["status"],
+    }, indent=2))
     return 0
 
 

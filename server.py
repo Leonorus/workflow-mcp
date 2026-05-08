@@ -227,7 +227,13 @@ def validate_surfaces(
     return _with_metrics(
         "validate_surfaces",
         args,
-        lambda: core_validate_surfaces(repo_root=repo_root, live_root=live_root, mirror_root=mirror_root, health_url=health_url),
+        lambda: core_validate_surfaces(
+            repo_root=repo_root,
+            live_root=live_root,
+            mirror_root=mirror_root,
+            health_url=health_url,
+            health_payload={"status": "ok", "service": "workflow-mcp", "tools": TOOL_COUNT, **health_stats()},
+        ),
     )
 
 

@@ -1080,6 +1080,7 @@ def validate_surfaces(
     live_root: str | None = None,
     mirror_root: str | None = None,
     health_url: str = "http://127.0.0.1:8813/health",
+    health_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read-only drift checks for Workflow MCP, workflow skills, hooks, plist, config, and health."""
 
@@ -1138,10 +1139,15 @@ def validate_surfaces(
         checks.append(_surface_check("hermes_config_workflow_mcp", "ok" if has_workflow else "error", "workflow MCP configured" if has_workflow else "workflow MCP config missing", str(config_path)))
 
     try:
-        with urllib.request.urlopen(health_url, timeout=3) as response:
-            health = json.loads(response.read().decode("utf-8"))
+        if health_payload is not None:
+            health = health_payload
+            health_source = "internal"
+        else:
+            with urllib.request.urlopen(health_url, timeout=3) as response:
+                health = json.loads(response.read().decode("utf-8"))
+            health_source = health_url
         ok = health.get("status") == "ok"
-        checks.append(_surface_check("workflow_health", "ok" if ok else "error", json.dumps(health, sort_keys=True)[:500], health_url))
+        checks.append(_surface_check("workflow_health", "ok" if ok else "error", json.dumps(health, sort_keys=True)[:500], health_source))
         current = health.get("current_source_version") or health.get("service_version")
         process = health.get("process_service_version")
         if process and current and process != current:

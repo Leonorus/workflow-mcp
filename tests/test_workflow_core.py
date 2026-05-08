@@ -32,6 +32,8 @@ def test_classifier_real_workflow_examples():
         "add LaunchAgent for workflow MCP": "script",
         "dependency bump and CI cleanup": "repo_maintenance",
         "deploy production Kubernetes cluster migration with rollback": "heavy_ops",
+        "add prod deploy matrix labels only in GitLab CI, no secret values and no runtime config changes": "light_ops",
+        "make it better": "ambiguous",
     }
     for prompt, expected in cases.items():
         result = core.classify_task(prompt)
@@ -49,6 +51,11 @@ def test_start_task_packet_for_non_trivia_and_trivia(tmp_path, monkeypatch):
     assert packet["bucket"] == "script"
     assert "codex-workflow" in packet["required_skills"]
     assert packet["delegation_should_be_considered"] is True
+    assert packet["first_move"]
+    assert packet["must_not_do_before"]
+    assert packet["bucket_decision"]["selected"] == "script"
+    assert packet["reasoning_guard"]["required"] is True
+    assert packet["finish_requirements"]["must_call_finish_checklist"] is True
     assert packet["candidate_notes"]
     assert packet["contract"]["first_move"]
 
@@ -75,6 +82,7 @@ def test_discover_context_scopes_and_caps(tmp_path):
     (project / "index.md").write_text("---\ngenerated_by: hermes-projects-index-watcher\n---\nworkflow mcp hermes-config", encoding="utf-8")
     (project / "workflow-mcp.md").write_text("Workflow MCP LaunchAgent service notes", encoding="utf-8")
     (knowledge / "launchd.md").write_text("Reusable launchd and MCP service pattern", encoding="utf-8")
+    (knowledge / "generic.md").write_text("checklist context start finish user provided", encoding="utf-8")
     (org / "hermes.md").write_text("Hermes workflow mcp operational convention", encoding="utf-8")
     (clipping / "workflow.md").write_text("workflow mcp should not be searched by default", encoding="utf-8")
 
@@ -83,6 +91,8 @@ def test_discover_context_scopes_and_caps(tmp_path):
     assert len(paths) == 3
     assert all(not p.startswith("Clippings/") for p in paths)
     assert any(p.startswith("Projects/hermes-config/") for p in paths)
+    assert "Knowledge/generic.md" not in paths
+    assert result["candidates"][0]["match_class"] in {"must_read", "likely_relevant"}
     assert "Projects/hermes-config" in result["searched_roots"]
 
 
@@ -229,7 +239,48 @@ def test_finish_checklist_rules():
     joined = "\n".join(debug["checklist"])
     assert "plutil" in joined
     assert "hermes config check" in joined
+    assert debug["unsafe_to_finalize"] is True
+    assert debug["missing_notes"]
+    complete = core.finish_checklist(
+        "script",
+        changed_files=["scheduled-tasks/workflow-mcp/server.py", "scheduled-tasks/workflow-mcp/com.filipp.hermes-workflow-mcp.plist"],
+        commands_run=["pytest", "py_compile", "smoke.py", "plutil -lint", "launchctl print", "validate_surfaces"],
+        findings="workflow mcp complete",
+        repo="hermes-config",
+        skills_updated=["hermes-agent"],
+    )
+    assert complete["unsafe_to_finalize"] is False
+    assert complete["required_checks"]
 
     research = core.finish_checklist("research", findings="workflow mcp options", repo="hermes-config")
     assert research["note_action"] == "ask_user"
     assert research["suggested_note_path"].startswith("Projects/hermes-config/")
+
+
+def test_validate_surfaces_reports_drift_without_writes(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    repo = home / "src" / "hermes-config"
+    live = home / ".hermes" / "scheduled-tasks" / "workflow-mcp"
+    mirror = repo / "scheduled-tasks" / "workflow-mcp"
+    for root in (live, mirror, repo / "skills" / "codex-workflow", repo / "hooks", home / ".hermes" / "skills" / "codex-workflow", home / ".hermes" / "hooks", home / "Library" / "LaunchAgents"):
+        root.mkdir(parents=True, exist_ok=True)
+    for name in ["workflow_core.py", "server.py", "metrics.py", "run.sh", "com.filipp.hermes-workflow-mcp.plist"]:
+        (live / name).write_text("same", encoding="utf-8")
+        (mirror / name).write_text("same", encoding="utf-8")
+    plist = """<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>Label</key><string>com.filipp.hermes-workflow-mcp</string></dict></plist>"""
+    (live / "com.filipp.hermes-workflow-mcp.plist").write_text(plist, encoding="utf-8")
+    (mirror / "com.filipp.hermes-workflow-mcp.plist").write_text(plist, encoding="utf-8")
+    (home / "Library" / "LaunchAgents" / "com.filipp.hermes-workflow-mcp.plist").write_text(plist, encoding="utf-8")
+    (home / ".hermes" / "skills" / "codex-workflow" / "SKILL.md").write_text("skill", encoding="utf-8")
+    (repo / "skills" / "codex-workflow" / "SKILL.md").write_text("different", encoding="utf-8")
+    for hook in ["classify-task-reminder.py", "obsidian-index.py"]:
+        (home / ".hermes" / "hooks" / hook).write_text("hook", encoding="utf-8")
+        (repo / "hooks" / hook).write_text("hook", encoding="utf-8")
+    (home / ".hermes" / "config.yaml").parent.mkdir(parents=True, exist_ok=True)
+    (home / ".hermes" / "config.yaml").write_text("mcp_servers:\n  workflow:\n    url: http://127.0.0.1:8813/mcp\n", encoding="utf-8")
+    monkeypatch.setattr(core.Path, "home", lambda: home)
+
+    result = core.validate_surfaces(repo_root=str(repo), live_root=str(live), mirror_root=str(mirror), health_url="http://127.0.0.1:1/health")
+    assert result["status"] in {"warn", "error"}
+    assert any(item["surface"] == "codex_workflow_skill" for item in result["drift"])
+    assert result["suggested_fix_plan"]

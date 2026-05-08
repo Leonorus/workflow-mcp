@@ -50,4 +50,6 @@ def test_health_stats_include_version_and_counters(tmp_path, monkeypatch):
     assert stats["error_count"] >= 1
     assert stats["last_error_type"] == "RuntimeError"
     assert stats["service_version"]
+    assert stats["process_service_version"]
+    assert stats["current_source_version"]
     assert stats["metrics_path"].endswith("calls.jsonl")
