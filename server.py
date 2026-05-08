@@ -21,18 +21,19 @@ TASK_DIR = Path(__file__).resolve().parent
 if str(TASK_DIR) not in sys.path:
     sys.path.insert(0, str(TASK_DIR))
 
-from metrics import health_stats, record_call  # noqa: E402
+from metrics import current_service_version, health_stats, record_call  # noqa: E402
 from workflow_core import (  # noqa: E402
     classify_task as core_classify_task,
     discover_context as core_discover_context,
     finish_checklist as core_finish_checklist,
     start_task as core_start_task,
     suggest_delegation as core_suggest_delegation,
+    validate_surfaces as core_validate_surfaces,
 )
 
 HOST = os.environ.get("HERMES_WORKFLOW_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("HERMES_WORKFLOW_MCP_PORT", "8813"))
-TOOL_COUNT = 5
+TOOL_COUNT = 6
 
 mcp = FastMCP(
     "workflow",
@@ -58,7 +59,9 @@ def _with_metrics(tool: str, args: dict[str, Any], fn: Callable[[], T]) -> T:
 
 @mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
 async def health(_: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "workflow-mcp", "tools": TOOL_COUNT, **health_stats()})
+    stats = health_stats()
+    stats.setdefault("current_source_version", current_service_version())
+    return JSONResponse({"status": "ok", "service": "workflow-mcp", "tools": TOOL_COUNT, **stats})
 
 
 @mcp.tool()
@@ -163,6 +166,13 @@ def finish_checklist(
     repo: str | None = None,
     repo_root: str | None = None,
     auto_detect_changes: bool = True,
+    subagents_used: list[str] | None = None,
+    external_side_effects: list[str] | None = None,
+    docs_changed: bool | None = None,
+    notes_written: list[str] | None = None,
+    skills_loaded: list[str] | None = None,
+    skills_updated: list[str] | None = None,
+    verification_intent: str | None = None,
 ) -> dict[str, Any]:
     """Return verification/docs/note/memory/skill-maintenance finish requirements."""
 
@@ -174,6 +184,13 @@ def finish_checklist(
         "repo": repo,
         "repo_root": repo_root,
         "auto_detect_changes": auto_detect_changes,
+        "subagents_used": subagents_used,
+        "external_side_effects": external_side_effects,
+        "docs_changed": docs_changed,
+        "notes_written": notes_written,
+        "skills_loaded": skills_loaded,
+        "skills_updated": skills_updated,
+        "verification_intent": verification_intent,
     }
     return _with_metrics(
         "finish_checklist",
@@ -186,7 +203,31 @@ def finish_checklist(
             repo=repo,
             repo_root=repo_root,
             auto_detect_changes=auto_detect_changes,
+            subagents_used=subagents_used,
+            external_side_effects=external_side_effects,
+            docs_changed=docs_changed,
+            notes_written=notes_written,
+            skills_loaded=skills_loaded,
+            skills_updated=skills_updated,
+            verification_intent=verification_intent,
         ),
+    )
+
+
+@mcp.tool()
+def validate_surfaces(
+    repo_root: str | None = None,
+    live_root: str | None = None,
+    mirror_root: str | None = None,
+    health_url: str = "http://127.0.0.1:8813/health",
+) -> dict[str, Any]:
+    """Read-only drift checks for live/mirror Workflow MCP, hooks, LaunchAgent plist, and Hermes config."""
+
+    args = {"repo_root": repo_root, "live_root": live_root, "mirror_root": mirror_root, "health_url": health_url}
+    return _with_metrics(
+        "validate_surfaces",
+        args,
+        lambda: core_validate_surfaces(repo_root=repo_root, live_root=live_root, mirror_root=mirror_root, health_url=health_url),
     )
 
 

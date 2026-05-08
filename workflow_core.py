@@ -9,9 +9,12 @@ start/finish rules into structured data for a tiny local MCP server.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
+import plistlib
 import re
 import subprocess
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -190,6 +193,18 @@ _DESTRUCTIVE_WORDS = ("apply", "delete", "destroy", "remove", "force", "reset", 
 _ARCHITECTURE_WORDS = ("architecture", "design", "migration", "migrate", "tradeoff", "tradeoffs", "scaling", "performance")
 _HERMES_MCP_WORDS = ("hermes", "mcp", "workflow", "codex-workflow", "launchagent", "scheduled-task", "scheduled task")
 
+_CONTEXT_GENERIC_TERMS = {
+    "ask", "bucket", "case", "cases", "check", "checklist", "concrete", "context", "current", "exact",
+    "finish", "follow", "gate", "improve", "improvements", "note", "only", "phase", "provided", "read",
+    "report", "required", "review", "richer", "start", "status", "task", "text", "user",
+}
+_CONTEXT_DOMAIN_TERMS = {
+    "codex", "codex-workflow", "hermes", "mcp", "workflow", "workflow-mcp", "launchagent", "launchd", "scheduled",
+    "scheduled-task", "scheduled-tasks", "metrics", "telemetry", "eval", "corpus", "obsidian", "analyzer",
+    "validate", "surfaces", "surface", "plist", "server", "health", "hook", "hooks",
+}
+_CONTEXT_EXACT_PHRASES = ("workflow mcp", "codex workflow", "finish checklist", "start task", "validate surfaces")
+
 
 def _contains(text: str, needles: tuple[str, ...]) -> bool:
     return any(n in text for n in needles)
@@ -311,7 +326,10 @@ def classify_task(prompt: str, cwd: str | None = None, repo: str | None = None) 
     if _contains(text, _ARCHITECTURE_WORDS):
         escalation_flags.append("architecture_or_tradeoff")
 
-    if word_count <= 8 and not mutation and not any(scores[b] for b in ("debug", "heavy_ops", "app_code", "script", "repo_maintenance")):
+    if word_count <= 5 and text.strip() in {"make it better", "improve it", "fix it", "do it"}:
+        scores["ambiguous"] += 6
+        reasons["ambiguous"].append("vague prompt changes scope and required tools")
+    elif word_count <= 8 and not mutation and not any(scores[b] for b in ("debug", "heavy_ops", "app_code", "script", "repo_maintenance")):
         scores["trivia"] += 4
         reasons["trivia"].append("short simple prompt")
 
@@ -326,6 +344,18 @@ def classify_task(prompt: str, cwd: str | None = None, repo: str | None = None) 
     if scores["script"] and scores["heavy_ops"] and _contains(text, ("launchagent", "launchd", "workflow mcp", "scheduled-task")) and not _contains(text, ("prod", "production", "cluster", "terraform", "secret", "secrets")):
         scores["script"] += 3
         reasons["script"].append("local launchd/MCP service work without prod boundary")
+    ci_only_prod = (
+        _contains(text, ("ci", "pipeline", "matrix", "labels"))
+        and _contains(text, ("prod", "production", "deploy"))
+        and _contains(text, ("no secret", "no secrets", "no runtime", "ci-only", "ci only", "labels only"))
+        and not _contains(text, ("apply", "cluster", "terraform", "rbac", "network policy", "helm values"))
+    )
+    if ci_only_prod:
+        scores["light_ops"] += 7
+        scores["heavy_ops"] = min(scores["heavy_ops"], 5)
+        reasons["light_ops"].append("production wording appears limited to CI-only matrix/list wiring")
+        if "ops_boundary" in escalation_flags:
+            escalation_flags.remove("ops_boundary")
     if scores["trivia"] >= 7:
         for bucket in ("light_ops", "repo_maintenance"):
             scores[bucket] = min(scores[bucket], 2)
@@ -450,6 +480,24 @@ def _context_index_entries(vault: Path, roots: list[Path], warnings: list[str]) 
     return entries, False
 
 
+def _context_term_weight(term: str) -> int:
+    if term in _CONTEXT_DOMAIN_TERMS:
+        return 3
+    if term in _CONTEXT_GENERIC_TERMS:
+        return 0
+    if re.search(r"\d", term) or len(term) >= 10:
+        return 2
+    return 1
+
+
+def _context_match_class(score: int, matched: list[str], domain_hits: set[str], exact_phrase_hit: bool) -> tuple[str, str | None]:
+    if exact_phrase_hit or len(domain_hits) >= 2 or score >= 12:
+        return "must_read", None
+    if score >= 5 or domain_hits:
+        return "likely_relevant", None
+    return "weak_match", "Only generic/low-weight terms matched; read only if higher-ranked candidates are insufficient."
+
+
 def discover_context(
     prompt: str,
     repo: str | None = None,
@@ -494,29 +542,49 @@ def discover_context(
 
     entries, index_used = _context_index_entries(vault, roots, warnings)
     scored: list[tuple[int, dict[str, Any], str, int]] = []
+    prompt_lower = prompt.lower()
+    repo_terms = _tokens(repo_name or "")
     for entry in entries:
         name_hits = {t for t in terms if t in entry["lower_name"]}
         content_hits = {t for t in terms if t in entry["lower_text"]}
         matched = sorted(name_hits | content_hits)
         if not matched:
             continue
-        score = len(name_hits) * 4 + len(content_hits)
+        domain_hits = {t for t in matched if t in _CONTEXT_DOMAIN_TERMS or t in repo_terms}
+        exact_phrase_hit = any(
+            phrase in prompt_lower and phrase.replace(" ", "-") in entry["lower_name"].replace("_", "-")
+            for phrase in _CONTEXT_EXACT_PHRASES
+        )
+        score = 0
+        for term in name_hits:
+            score += max(1, _context_term_weight(term)) * 4
+        for term in content_hits:
+            score += _context_term_weight(term)
+        if repo_terms and name_hits & repo_terms:
+            score += 5
+        if exact_phrase_hit:
+            score += 8
         if entry["is_index"]:
             score += 2
-        if entry["generated_index"] and not name_hits and len(content_hits) < 2:
+        if entry["generated_index"] and not name_hits and len([t for t in content_hits if _context_term_weight(t) > 0]) < 2:
             continue
         if entry["generated_index"]:
             score -= 1
         if score <= 0:
             continue
-        strength = "high" if score >= 8 else "medium" if score >= 4 else "low"
+        match_class, why_not_stronger = _context_match_class(score, matched, domain_hits, exact_phrase_hit)
+        strength = "high" if match_class == "must_read" else "medium" if match_class == "likely_relevant" else "low"
         reason = "project/layer index keyword overlap" if entry["is_index"] else "direct keyword overlap"
         item: dict[str, Any] = {
             "path": entry["rel"],
             "reason": reason,
             "strength": strength,
+            "match_class": match_class,
+            "score": score,
             "matched_terms": matched[:12],
         }
+        if why_not_stronger:
+            item["why_not_stronger"] = why_not_stronger
         if include_snippets:
             item["snippet"] = _snippet_for(entry["text_prefix"], set(matched))
         scored.append((score, item, entry["text_prefix"], entry["size"]))
@@ -557,6 +625,71 @@ def required_skills_for(prompt: str, bucket: str) -> list[str]:
     return list(dict.fromkeys(skills))
 
 
+def _bucket_decision(classification: dict[str, Any], bucket: str) -> dict[str, Any]:
+    runner_up = classification.get("runner_up") or {}
+    why = classification.get("why") or []
+    override_hint = None
+    if runner_up.get("bucket"):
+        display = BUCKET_DISPLAY.get(runner_up["bucket"], runner_up["bucket"])
+        override_hint = f"If gathered evidence fits {display} better, call start_task with already_classified_bucket='{runner_up['bucket']}'."
+    return {
+        "selected": bucket,
+        "runner_up": runner_up or None,
+        "selected_because": why,
+        "not_runner_up_because": "Selected bucket has stronger policy-specific score or caller override." if runner_up else None,
+        "override_hint": override_hint,
+    }
+
+
+def _risk_axes_for(prompt: str, bucket: str, classification: dict[str, Any]) -> list[str]:
+    axes = list(classification.get("escalation_flags") or [])
+    text = prompt.lower()
+    if bucket == "script" and _contains(text, ("launchagent", "launchd", "plist", "service", "hook", "scheduled")):
+        axes.append("persistent_service_or_schedule")
+    if bucket in {"debug", "heavy_ops"}:
+        axes.append("requires_evidence_before_action")
+    if classification.get("obsidian_required"):
+        axes.append("prior_context_required")
+    return sorted(dict.fromkeys(axes))
+
+
+def _must_not_do_before(bucket: str, risk_axes: list[str]) -> list[str]:
+    rules: dict[str, list[str]] = {
+        "trivia": ["Do not add process overhead unless the tiny change touches files or commands."],
+        "light_ops": ["Do not widen scope beyond the small config/convention change without reclassifying."],
+        "heavy_ops": ["Do not apply or mutate remote/prod state before naming blast radius, rollback/dry-run path, and validation."],
+        "app_code": ["Do not implement broad refactors before defining success criteria and existing test shape."],
+        "script": ["Do not install or reload persistent jobs before syntax checks and a safe smoke/dry-run path."],
+        "debug": ["Do not patch before reproducing or observing the exact failure and naming falsifiable hypotheses."],
+        "research": ["Do not present assumptions as facts; separate source-backed evidence from recommendations."],
+        "repo_maintenance": ["Do not stage broad or unrelated local changes; preserve existing user work."],
+        "ambiguous": ["Do not edit files until scope is clarified or a low-risk assumption is explicit."],
+    }
+    out = list(rules[bucket])
+    if "prior_context_required" in risk_axes:
+        out.append("Do not make Obsidian/project claims before reading the directly relevant candidate notes.")
+    return out
+
+
+def _required_evidence(bucket: str, risk_axes: list[str]) -> list[str]:
+    evidence = ["Exact file paths or commands inspected for the intended change."] if bucket != "trivia" else []
+    if bucket in {"debug", "heavy_ops"} or "requires_evidence_before_action" in risk_axes:
+        evidence.append("Tool-backed evidence for the failure/risk/blast radius before changing behavior.")
+    if "persistent_service_or_schedule" in risk_axes:
+        evidence.extend(["launchd plist semantics", "script idempotency/lock/state behavior", "task-local logs or dry-run output"])
+    return evidence
+
+
+def _finish_requirements(bucket: str, finish: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "must_call_finish_checklist": bucket != "trivia",
+        "note_action": finish.get("note_action"),
+        "suggested_note_path": finish.get("suggested_note_path"),
+        "must_state_verification": bucket != "trivia",
+        "must_review_diff": True,
+    }
+
+
 def start_task(
     prompt: str,
     cwd: str | None = None,
@@ -579,30 +712,46 @@ def start_task(
     repo_name = _repo_name(repo, cwd)
     need_fields = set(fields) if fields is not None else None
     context = {"candidates": [], "warnings": []}
-    if need_fields is None or need_fields & {"candidate_notes", "context_warnings"}:
+    if need_fields is None or need_fields & {"candidate_notes", "context_candidates", "context_warnings"}:
         context = discover_context(prompt, repo=repo_name, cwd=cwd, max_candidates=8, include_snippets=False)
     delegation = {"should_delegate": False, "tasks": [], "warnings": [], "why": "not requested"}
-    if need_fields is None or need_fields & {"delegation_should_be_considered", "delegation_hint"}:
+    if need_fields is None or need_fields & {"delegation_should_be_considered", "delegation_hint", "delegation"}:
         delegation = suggest_delegation(prompt, bucket=bucket, cwd=cwd, repo=repo_name)
     finish = {"checklist": [], "suggested_note_path": None}
-    if need_fields is None or need_fields & {"finish_checklist", "suggested_note_path"}:
+    if need_fields is None or need_fields & {"finish_checklist", "finish_requirements", "suggested_note_path"}:
         finish = finish_checklist(bucket=bucket, changed_files=[], commands_run=[], findings=prompt[:160], repo=repo_name)
 
+    risk_axes = _risk_axes_for(prompt, bucket, classification)
+    first_move = BUCKET_CONTRACTS[bucket]["first_move"]
     packet = {
         "bucket": bucket,
         "visible_statement": classification["visible_statement"],
         "confidence": classification["confidence"],
         "ambiguity": classification["ambiguity"],
         "why": classification["why"],
+        "bucket_decision": _bucket_decision(classification, bucket),
+        "first_move": first_move,
+        "must_not_do_before": _must_not_do_before(bucket, risk_axes),
+        "risk_axes": risk_axes,
+        "required_evidence": _required_evidence(bucket, risk_axes),
+        "success_criteria": [BUCKET_CONTRACTS[bucket]["verification_and_finish"]],
         "required_skills": required_skills_for(prompt, bucket),
         "obsidian_required": classification["obsidian_required"],
         "reasoning_guard_required": classification["reasoning_guard_required"],
+        "reasoning_guard": {
+            "required": classification["reasoning_guard_required"],
+            "triggers": BUCKET_CONTRACTS[bucket].get("reasoning_guard_triggers", []),
+            "risk_axes": risk_axes,
+        },
         "delegation_should_be_considered": delegation["should_delegate"],
         "delegation_hint": delegation,
+        "delegation": delegation,
         "candidate_notes": context["candidates"],
+        "context_candidates": context["candidates"],
         "context_warnings": context["warnings"],
         "contract": BUCKET_CONTRACTS[bucket],
         "finish_checklist": finish["checklist"],
+        "finish_requirements": _finish_requirements(bucket, finish),
         "suggested_note_path": finish.get("suggested_note_path"),
         "session_id": session_id,
     }
@@ -738,6 +887,47 @@ def _git_changed_files(repo_root: str | None) -> tuple[list[str], list[str]]:
     return sorted(dict.fromkeys(changed)), warnings
 
 
+def _required_checks_for_files(changed_files: list[str]) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+
+    def add(key: str, command_hint: str, reason: str) -> None:
+        if not any(item["key"] == key for item in checks):
+            checks.append({"key": key, "command_hint": command_hint, "reason": reason})
+
+    if any(path.endswith(".py") for path in changed_files):
+        add("python_tests", "pytest and/or py_compile for edited Python", "Python code changed")
+    if any(path.endswith((".sh", ".zsh")) or path.endswith("run.sh") for path in changed_files):
+        add("shell_syntax", "zsh -n or sh -n on edited scripts", "Shell script changed")
+    if any(path.endswith(".plist") for path in changed_files):
+        add("plist_lint", "plutil -lint on source and installed plists", "LaunchAgent plist changed")
+        add("launchctl_print", "launchctl print for loaded labels", "LaunchAgent schedule/runtime changed")
+    if any("config.yaml" in path or "mcp_servers" in path for path in changed_files):
+        add("hermes_config", "hermes config check", "Hermes config changed")
+        add("mcp_test", "hermes mcp test for changed MCP servers", "MCP config changed")
+    if any("workflow-mcp" in path for path in changed_files):
+        add("workflow_smoke", "workflow-mcp smoke.py and direct MCP smoke", "Workflow MCP changed")
+        add("surface_validation", "validate_surfaces or live/mirror comparisons", "Workflow surfaces changed")
+    if any("README" in path or "AGENTS.md" in path or "/docs/" in path for path in changed_files):
+        add("docs_review", "review docs commands and paths", "Documentation changed")
+    return checks
+
+
+def _command_covers_check(command: str, check_key: str) -> bool:
+    c = command.lower()
+    matchers = {
+        "python_tests": ("pytest", "py_compile"),
+        "shell_syntax": ("zsh -n", "sh -n"),
+        "plist_lint": ("plutil -lint",),
+        "launchctl_print": ("launchctl print",),
+        "hermes_config": ("hermes config check",),
+        "mcp_test": ("hermes mcp test",),
+        "workflow_smoke": ("smoke.py", "call_tool('start_task'", 'call_tool("start_task"'),
+        "surface_validation": ("validate_surfaces", "cmp -s", "diff --check"),
+        "docs_review": ("readme", "docs", "documentation"),
+    }
+    return any(token in c for token in matchers.get(check_key, (check_key,)))
+
+
 def finish_checklist(
     bucket: str,
     changed_files: list[str] | None = None,
@@ -746,6 +936,13 @@ def finish_checklist(
     repo: str | None = None,
     repo_root: str | None = None,
     auto_detect_changes: bool = True,
+    subagents_used: list[str] | None = None,
+    external_side_effects: list[str] | None = None,
+    docs_changed: bool | None = None,
+    notes_written: list[str] | None = None,
+    skills_loaded: list[str] | None = None,
+    skills_updated: list[str] | None = None,
+    verification_intent: str | None = None,
 ) -> dict[str, Any]:
     bucket = _validate_bucket(bucket)
     caller_changed_files = changed_files or []
@@ -806,6 +1003,42 @@ def finish_checklist(
 
     checklist.append("Consider memory/skill maintenance only for durable preferences, environment facts, reusable procedures, or corrected workflow gaps.")
 
+    required_checks = _required_checks_for_files(changed_files)
+    missing_verification = [
+        check for check in required_checks
+        if not any(_command_covers_check(command, check["key"]) for command in commands_run)
+    ]
+    if not commands_run and bucket != "trivia":
+        missing_verification.append({"key": "verification_summary", "command_hint": "run or explicitly block at least one targeted verification", "reason": "non-trivia task"})
+
+    docs_paths = [path for path in changed_files if "README" in path or "AGENTS.md" in path or "/docs/" in path]
+    workflow_surface_paths = [path for path in changed_files if "workflow-mcp" in path or "codex-workflow" in path or "hooks/" in path]
+    missing_docs: list[str] = []
+    if docs_changed is False and (docs_paths or workflow_surface_paths):
+        missing_docs.append("Documentation/workflow surface changed but docs_changed=false.")
+    missing_notes: list[str] = []
+    if note_action == "write_raw_note" and not notes_written:
+        missing_notes.append("Raw project note required for this bucket/findings and none were reported.")
+    missing_skill_or_memory_action: list[str] = []
+    if workflow_surface_paths and not skills_updated:
+        missing_skill_or_memory_action.append("Workflow surface changed; confirm codex-workflow/hermes-agent skill references are still current or update them.")
+    external_side_effects_review = [
+        f"Verify side effect outcome and rollback/undo path: {item}" for item in (external_side_effects or [])
+    ]
+    subagent_verification_required = [
+        f"Parent must verify subagent result before claiming success: {item}" for item in (subagents_used or [])
+    ]
+    unsafe_to_finalize = bool(
+        missing_verification
+        or missing_notes
+        or (bucket in {"heavy_ops", "debug"} and external_side_effects and not commands_run)
+    )
+    final_response_must_include = ["Bucket/workflow used", "Files changed", "Verification commands/results"]
+    if unsafe_to_finalize:
+        final_response_must_include.append("Explicit blockers or missing checks")
+    if note_action == "ask_user":
+        final_response_must_include.append("Ask whether to take a project note")
+
     return {
         "bucket": bucket,
         "note_action": note_action,
@@ -814,8 +1047,117 @@ def finish_checklist(
         "changed_files_detected": changed_files,
         "changed_files_source": changed_files_source,
         "git_warnings": git_warnings,
+        "required_checks": required_checks,
+        "missing_verification": missing_verification,
+        "missing_docs": missing_docs,
+        "missing_notes": missing_notes,
+        "missing_skill_or_memory_action": missing_skill_or_memory_action,
+        "external_side_effects_review": external_side_effects_review,
+        "subagent_verification_required": subagent_verification_required,
+        "unsafe_to_finalize": unsafe_to_finalize,
+        "final_response_must_include": final_response_must_include,
+        "verification_intent": verification_intent,
         "checklist": checklist,
     }
+
+
+def _read_text_safe(path: Path) -> tuple[str | None, str | None]:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace"), None
+    except OSError as exc:
+        return None, str(exc)
+
+
+def _surface_check(name: str, status: str, detail: str, path: str | None = None) -> dict[str, str]:
+    item = {"name": name, "status": status, "detail": detail}
+    if path:
+        item["path"] = path
+    return item
+
+
+def validate_surfaces(
+    repo_root: str | None = None,
+    live_root: str | None = None,
+    mirror_root: str | None = None,
+    health_url: str = "http://127.0.0.1:8813/health",
+) -> dict[str, Any]:
+    """Read-only drift checks for Workflow MCP, workflow skills, hooks, plist, config, and health."""
+
+    home = Path.home()
+    repo_path = Path(repo_root).expanduser() if repo_root else home / "src/hermes-config"
+    live_task = Path(live_root).expanduser() if live_root else home / ".hermes/scheduled-tasks/workflow-mcp"
+    mirror_task = Path(mirror_root).expanduser() if mirror_root else repo_path / "scheduled-tasks/workflow-mcp"
+    checks: list[dict[str, str]] = []
+    drift: list[dict[str, str]] = []
+    suggested_fix_plan: list[str] = []
+
+    for label, path in (("live_task", live_task), ("mirror_task", mirror_task), ("repo_root", repo_path)):
+        checks.append(_surface_check(label, "ok" if path.exists() else "error", "exists" if path.exists() else "missing", str(path)))
+
+    compare_pairs = [
+        ("workflow_core", live_task / "workflow_core.py", mirror_task / "workflow_core.py"),
+        ("server", live_task / "server.py", mirror_task / "server.py"),
+        ("metrics", live_task / "metrics.py", mirror_task / "metrics.py"),
+        ("run_sh", live_task / "run.sh", mirror_task / "run.sh"),
+        ("workflow_plist", live_task / "com.filipp.hermes-workflow-mcp.plist", mirror_task / "com.filipp.hermes-workflow-mcp.plist"),
+        ("codex_workflow_skill", home / ".hermes/skills/codex-workflow/SKILL.md", repo_path / "skills/codex-workflow/SKILL.md"),
+        ("classify_hook", home / ".hermes/hooks/classify-task-reminder.py", repo_path / "hooks/classify-task-reminder.py"),
+        ("obsidian_hook", home / ".hermes/hooks/obsidian-index.py", repo_path / "hooks/obsidian-index.py"),
+    ]
+    for name, left, right in compare_pairs:
+        if not left.exists() or not right.exists():
+            checks.append(_surface_check(name, "warn", f"cannot compare missing file(s): {left.exists()} {right.exists()}"))
+            continue
+        same = left.read_bytes() == right.read_bytes()
+        checks.append(_surface_check(name, "ok" if same else "warn", "live and mirror match" if same else "live/mirror drift"))
+        if not same:
+            drift.append({"surface": name, "live": str(left), "mirror": str(right), "kind": "content_mismatch"})
+
+    installed_plist = home / "Library/LaunchAgents/com.filipp.hermes-workflow-mcp.plist"
+    source_plist = live_task / "com.filipp.hermes-workflow-mcp.plist"
+    if installed_plist.exists() and source_plist.exists():
+        same = installed_plist.read_bytes() == source_plist.read_bytes()
+        checks.append(_surface_check("installed_workflow_plist", "ok" if same else "warn", "installed plist matches live source" if same else "installed plist drift", str(installed_plist)))
+        if not same:
+            drift.append({"surface": "installed_workflow_plist", "live": str(source_plist), "installed": str(installed_plist), "kind": "content_mismatch"})
+        try:
+            data = plistlib.loads(installed_plist.read_bytes())
+            label = data.get("Label")
+            checks.append(_surface_check("installed_workflow_plist_label", "ok" if label == "com.filipp.hermes-workflow-mcp" else "error", f"label={label}", str(installed_plist)))
+        except Exception as exc:
+            checks.append(_surface_check("installed_workflow_plist_parse", "error", str(exc), str(installed_plist)))
+    else:
+        checks.append(_surface_check("installed_workflow_plist", "warn", "source or installed plist missing", str(installed_plist)))
+
+    config_path = home / ".hermes/config.yaml"
+    config_text, config_err = _read_text_safe(config_path)
+    if config_text is None:
+        checks.append(_surface_check("hermes_config", "error", config_err or "unreadable", str(config_path)))
+    else:
+        has_workflow = "workflow:" in config_text and "127.0.0.1:8813/mcp" in config_text
+        checks.append(_surface_check("hermes_config_workflow_mcp", "ok" if has_workflow else "error", "workflow MCP configured" if has_workflow else "workflow MCP config missing", str(config_path)))
+
+    try:
+        with urllib.request.urlopen(health_url, timeout=3) as response:
+            health = json.loads(response.read().decode("utf-8"))
+        ok = health.get("status") == "ok"
+        checks.append(_surface_check("workflow_health", "ok" if ok else "error", json.dumps(health, sort_keys=True)[:500], health_url))
+        current = health.get("current_source_version") or health.get("service_version")
+        process = health.get("process_service_version")
+        if process and current and process != current:
+            drift.append({"surface": "workflow_health_version", "process_service_version": str(process), "current_source_version": str(current), "kind": "process_stale"})
+    except Exception as exc:
+        checks.append(_surface_check("workflow_health", "error", str(exc), health_url))
+
+    if drift:
+        suggested_fix_plan.extend([
+            "Sync mirror/live Workflow MCP files with rsync excluding logs and pycache.",
+            "Copy changed plists to ~/Library/LaunchAgents and kickstart only affected labels.",
+            "Run tests, py_compile, smoke.py, plutil, hermes config check, and hermes mcp test workflow.",
+        ])
+    statuses = {item["status"] for item in checks}
+    status = "error" if "error" in statuses else "warn" if "warn" in statuses or drift else "ok"
+    return {"status": status, "checks": checks, "drift": drift, "suggested_fix_plan": suggested_fix_plan}
 
 
 __all__ = [
@@ -828,4 +1170,5 @@ __all__ = [
     "required_skills_for",
     "start_task",
     "suggest_delegation",
+    "validate_surfaces",
 ]

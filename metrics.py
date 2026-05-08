@@ -86,7 +86,13 @@ def _service_version() -> str:
     return f"live-mtime-{mtime}"
 
 
-SERVICE_VERSION = _service_version()
+PROCESS_SERVICE_VERSION = _service_version()
+
+
+def current_service_version() -> str:
+    """Return the current source version; unlike PROCESS_SERVICE_VERSION this is not startup-cached."""
+
+    return _service_version()
 
 
 def _result_summary(result: Any) -> dict[str, Any]:
@@ -106,6 +112,12 @@ def _result_summary(result: Any) -> dict[str, Any]:
         out["checklist_count"] = len(result["checklist"])
     if "tasks" in result and isinstance(result["tasks"], list):
         out["tasks_count"] = len(result["tasks"])
+    if "status" in result:
+        out["status"] = result["status"]
+    if "drift" in result and isinstance(result["drift"], list):
+        out["drift_count"] = len(result["drift"])
+    if "checks" in result and isinstance(result["checks"], list):
+        out["checks_count"] = len(result["checks"])
     if "delegation_hint" in result and isinstance(result["delegation_hint"], dict):
         tasks = result["delegation_hint"].get("tasks")
         if isinstance(tasks, list):
@@ -134,7 +146,7 @@ def record_call(tool: str, started: float, success: bool, args: dict[str, Any] |
         "tool": tool,
         "success": success,
         "duration_ms": round((time.perf_counter() - started) * 1000, 2),
-        "service_version": SERVICE_VERSION,
+        "service_version": PROCESS_SERVICE_VERSION,
     }
     event.update(_prompt_summary(args.get("prompt")))
     if args.get("session_id"):
@@ -168,5 +180,7 @@ def health_stats() -> dict[str, Any]:
         "error_count": _ERROR_COUNT,
         "last_error_type": _LAST_ERROR_TYPE,
         "metrics_path": str(CALLS_PATH),
-        "service_version": SERVICE_VERSION,
+        "process_service_version": PROCESS_SERVICE_VERSION,
+        "current_source_version": current_service_version(),
+        "service_version": current_service_version(),
     }
