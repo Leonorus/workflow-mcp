@@ -1,0 +1,10 @@
+{"case_id":"debug-github-actions-workflow-failed","prompt":"workflow in GitHub Actions failed with timeout","bucket_primary":"debug","bucket_acceptable":["debug"],"reasoning_guard_required":true}
+{"case_id":"research-workflow-mcp-options","prompt":"compare Workflow MCP implementation options","bucket_primary":"research","bucket_acceptable":["research"],"reasoning_guard_required":false}
+{"case_id":"script-workflow-mcp-launchagent","prompt":"add LaunchAgent for Workflow MCP","bucket_primary":"script","bucket_acceptable":["script"],"reasoning_guard_required":true}
+{"case_id":"light-ops-prod-matrix-labels-only","prompt":"add prod deploy matrix labels only in GitLab CI, no secret values and no runtime config changes","bucket_primary":"light_ops","bucket_acceptable":["light_ops","repo_maintenance"],"reasoning_guard_required":false}
+{"case_id":"heavy-delete-prod-secret","prompt":"delete stale prod secret from Kubernetes cluster","bucket_primary":"heavy_ops","bucket_acceptable":["heavy_ops"],"reasoning_guard_required":true}
+{"case_id":"ambiguous-make-it-better","prompt":"make it better","bucket_primary":"ambiguous","bucket_acceptable":["ambiguous"],"reasoning_guard_required":false}
+{"case_id":"trivia-readme-typo","prompt":"fix typo in README","bucket_primary":"trivia","bucket_acceptable":["trivia"],"reasoning_guard_required":false}
+{"case_id":"repo-maintenance-deps-ci","prompt":"dependency bump and CI cleanup","bucket_primary":"repo_maintenance","bucket_acceptable":["repo_maintenance"],"reasoning_guard_required":false}
+{"case_id":"app-code-api-test","prompt":"add API endpoint with unit tests","bucket_primary":"app_code","bucket_acceptable":["app_code"],"reasoning_guard_required":false}
+{"case_id":"heavy-rollback-migration","prompt":"plan production database migration with rollback path","bucket_primary":"heavy_ops","bucket_acceptable":["heavy_ops"],"reasoning_guard_required":true}
