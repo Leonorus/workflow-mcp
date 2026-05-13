@@ -14,6 +14,7 @@ import os
 import plistlib
 import re
 import subprocess
+import tomllib
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,18 @@ WORKFLOW_WEIGHT = {
     "research": "Research workflow weight",
     "repo_maintenance": "Repo-maintenance workflow weight",
     "ambiguous": "Ambiguous workflow weight",
+}
+
+BUCKET_SKILL_NAMES = {
+    "trivia": "workflow-trivia-contract",
+    "light_ops": "workflow-light-ops-contract",
+    "heavy_ops": "workflow-heavy-ops-contract",
+    "app_code": "workflow-app-code-contract",
+    "script": "workflow-script-contract",
+    "debug": "workflow-debug-contract",
+    "research": "workflow-research-contract",
+    "repo_maintenance": "workflow-repo-maintenance-contract",
+    "ambiguous": "workflow-ambiguous-contract",
 }
 
 BUCKET_CONTRACTS: dict[str, dict[str, Any]] = {
@@ -490,10 +503,20 @@ def _context_term_weight(term: str) -> int:
     return 1
 
 
-def _context_match_class(score: int, matched: list[str], domain_hits: set[str], exact_phrase_hit: bool) -> tuple[str, str | None]:
-    if exact_phrase_hit or len(domain_hits) >= 2 or score >= 12:
+def _context_match_class(
+    score: int,
+    matched: list[str],
+    domain_hits: set[str],
+    exact_phrase_hit: bool,
+    name_hits: set[str] | None = None,
+) -> tuple[str, str | None]:
+    informative_hits = {term for term in matched if _context_term_weight(term) > 0}
+    informative_name_hits = {term for term in (name_hits or set()) if _context_term_weight(term) > 0}
+    if exact_phrase_hit or len(domain_hits) >= 2 or (score >= 12 and (len(informative_hits) >= 2 or bool(informative_name_hits))):
         return "must_read", None
-    if score >= 5 or domain_hits:
+    if score >= 5 and informative_hits:
+        return "likely_relevant", None
+    if domain_hits:
         return "likely_relevant", None
     return "weak_match", "Only generic/low-weight terms matched; read only if higher-ranked candidates are insufficient."
 
@@ -572,7 +595,7 @@ def discover_context(
             score -= 1
         if score <= 0:
             continue
-        match_class, why_not_stronger = _context_match_class(score, matched, domain_hits, exact_phrase_hit)
+        match_class, why_not_stronger = _context_match_class(score, matched, domain_hits, exact_phrase_hit, name_hits)
         strength = "high" if match_class == "must_read" else "medium" if match_class == "likely_relevant" else "low"
         reason = "project/layer index keyword overlap" if entry["is_index"] else "direct keyword overlap"
         item: dict[str, Any] = {
@@ -610,17 +633,31 @@ def discover_context(
         "indexed_files": len(entries),
     }
 
-def required_skills_for(prompt: str, bucket: str) -> list[str]:
+def required_skills_for(
+    prompt: str,
+    bucket: str,
+    obsidian_required: bool | None = None,
+    reasoning_guard_required: bool | None = None,
+) -> list[str]:
     text = prompt.lower()
+    bucket = _validate_bucket(bucket)
     skills: list[str] = []
     if bucket not in {"trivia"}:
         skills.append("codex-workflow")
+    skills.append(BUCKET_SKILL_NAMES[bucket])
     if _contains(text, _HERMES_MCP_WORDS):
         skills.extend(["hermes-agent", "native-mcp"])
-    if "obsidian" in text or bucket in {"debug", "heavy_ops"} or "architecture" in text:
+    if obsidian_required is None:
+        obsidian_required = bool("obsidian" in text or BUCKET_CONTRACTS[bucket]["obsidian_required"] or "architecture" in text)
+    if obsidian_required:
         skills.append("obsidian")
     if bucket == "debug":
         skills.append("systematic-debugging")
+    # A reasoning guard is an output contract rather than a separate tool, but keep
+    # codex-workflow present when the selected bucket is otherwise trivial/ambiguous
+    # and the prompt-derived risk still requires evidence-gated reasoning.
+    if reasoning_guard_required and "codex-workflow" not in skills and bucket != "trivia":
+        skills.insert(0, "codex-workflow")
     # Preserve order while de-duplicating.
     return list(dict.fromkeys(skills))
 
@@ -701,10 +738,24 @@ def start_task(
     if already_classified_bucket:
         bucket = _validate_bucket(already_classified_bucket)
         classification = classify_task(prompt, cwd=cwd, repo=repo)
+        original_bucket = classification["bucket"]
+        prompt_obsidian_required = bool(classification.get("obsidian_required"))
+        prompt_reasoning_guard_required = bool(classification.get("reasoning_guard_required"))
         classification["bucket"] = bucket
         classification["visible_statement"] = _visible_statement(bucket, [f"caller supplied {BUCKET_DISPLAY[bucket]} classification"])
         classification["why"] = [f"caller supplied {BUCKET_DISPLAY[bucket]} classification"]
-        classification["obsidian_required"] = bool(BUCKET_CONTRACTS[bucket]["obsidian_required"] or bucket in {"debug", "heavy_ops"})
+        classification["obsidian_required"] = bool(
+            prompt_obsidian_required
+            or BUCKET_CONTRACTS[bucket]["obsidian_required"]
+            or bucket in {"debug", "heavy_ops"}
+        )
+        classification["reasoning_guard_required"] = bool(
+            prompt_reasoning_guard_required
+            or bucket in {"debug", "heavy_ops"}
+            or (bucket == "script" and _contains(prompt.lower(), ("launchagent", "launchd", "mcp", "service", "hook")))
+        )
+        classification["override"] = {"from": original_bucket, "to": bucket}
+        classification["ambiguity"] = bool(classification.get("ambiguity") or original_bucket != bucket)
     else:
         classification = classify_task(prompt, cwd=cwd, repo=repo)
         bucket = classification["bucket"]
@@ -735,7 +786,7 @@ def start_task(
         "risk_axes": risk_axes,
         "required_evidence": _required_evidence(bucket, risk_axes),
         "success_criteria": [BUCKET_CONTRACTS[bucket]["verification_and_finish"]],
-        "required_skills": required_skills_for(prompt, bucket),
+        "required_skills": required_skills_for(prompt, bucket, classification["obsidian_required"], classification["reasoning_guard_required"]),
         "obsidian_required": classification["obsidian_required"],
         "reasoning_guard_required": classification["reasoning_guard_required"],
         "reasoning_guard": {
@@ -811,9 +862,22 @@ def suggest_delegation(prompt: str, bucket: str | None = None, cwd: str | None =
     repo_name = _repo_name(repo, cwd)
     signals = _extract_delegation_signals(prompt)
     summary = _signal_summary(signals)
-    context_lines = [f"Prompt: {prompt}", f"Repo: {repo_name or 'unknown'}", f"Bucket: {bucket}."]
+    contract = BUCKET_CONTRACTS[bucket]
+    local_risk_axes = _risk_axes_for(prompt, bucket, classify_task(prompt, cwd=cwd, repo=repo))
+    forbidden = "; ".join(_must_not_do_before(bucket, local_risk_axes)[:2])
+    context_lines = [
+        f"Bucket: {bucket}.",
+        "Mutation boundary: read-only; do not mutate files, git history, remote systems, notes, or runtime config.",
+        f"Exact goal from parent prompt: {prompt}",
+        f"Repo: {repo_name or 'unknown'}",
+        f"First-move contract: {contract['first_move']}",
+        f"Forbidden early action: {forbidden}",
+        "Allowed toolsets are the toolsets attached to this delegate_task only.",
+        "Expected output: concise facts with paths/URLs/commands, risks, recommendation, confidence, unknowns, and verification suggestions.",
+        "Parent will verify this summary before claiming success.",
+    ]
     if summary:
-        context_lines.append(f"Extracted signals: {summary}")
+        context_lines.append(f"Relevant paths/URLs/errors/signals: {summary}")
     base_context = "\n".join(context_lines)
     focus = f" ({summary})" if summary else ""
     destructive = _contains(prompt.lower(), _DESTRUCTIVE_WORDS)
@@ -1138,6 +1202,84 @@ def validate_surfaces(
         has_workflow = "workflow:" in config_text and "127.0.0.1:8813/mcp" in config_text
         checks.append(_surface_check("hermes_config_workflow_mcp", "ok" if has_workflow else "error", "workflow MCP configured" if has_workflow else "workflow MCP config missing", str(config_path)))
 
+    # Codex readiness: hooks can remind Codex to use Workflow MCP, but the
+    # runtime also needs MCP wiring and local split skills available.
+    codex_root = home / ".codex"
+    codex_config_path = codex_root / "config.toml"
+    codex_config_text, codex_config_err = _read_text_safe(codex_config_path)
+    if codex_config_text is None:
+        checks.append(_surface_check("codex_config", "warn", codex_config_err or "unreadable", str(codex_config_path)))
+    else:
+        try:
+            codex_config_data = tomllib.loads(codex_config_text)
+            workflow_cfg = (codex_config_data.get("mcp_servers") or {}).get("workflow") or {}
+            workflow_url = str(workflow_cfg.get("url", ""))
+            has_codex_workflow = workflow_url == "http://127.0.0.1:8813/mcp"
+            detail = f"workflow url={workflow_url or '<missing>'}"
+        except Exception as exc:
+            has_codex_workflow = False
+            detail = f"config parse failed: {exc}"
+        checks.append(_surface_check("codex_config_workflow_mcp", "ok" if has_codex_workflow else "error", detail, str(codex_config_path)))
+
+    codex_hooks_json = codex_root / "hooks.json"
+    codex_hooks_text, codex_hooks_err = _read_text_safe(codex_hooks_json)
+    if codex_hooks_text is None:
+        checks.append(_surface_check("codex_hooks_json", "warn", codex_hooks_err or "unreadable", str(codex_hooks_json)))
+    else:
+        try:
+            json.loads(codex_hooks_text)
+            checks.append(_surface_check("codex_hooks_json", "ok", "valid JSON", str(codex_hooks_json)))
+        except json.JSONDecodeError as exc:
+            checks.append(_surface_check("codex_hooks_json", "error", f"invalid JSON: {exc}", str(codex_hooks_json)))
+
+    for hook_name in ("classify-task-reminder.sh", "obsidian-index.sh"):
+        hook_path = codex_root / "hooks" / hook_name
+        if not hook_path.exists():
+            checks.append(_surface_check(f"codex_{hook_name}", "warn", "missing", str(hook_path)))
+            continue
+        try:
+            proc = subprocess.run(["sh", "-n", str(hook_path)], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+            ok = proc.returncode == 0
+            detail = "shell syntax ok" if ok else (proc.stderr.strip()[:240] or f"exit {proc.returncode}")
+            checks.append(_surface_check(f"codex_{hook_name}", "ok" if ok else "error", detail, str(hook_path)))
+        except Exception as exc:
+            checks.append(_surface_check(f"codex_{hook_name}", "error", str(exc), str(hook_path)))
+
+    codex_skill = codex_root / "skills/codex-workflow/SKILL.md"
+    source_skill = repo_path / "skills/codex-workflow/SKILL.md"
+    if codex_skill.exists() and source_skill.exists():
+        codex_text = codex_skill.read_text(encoding="utf-8", errors="replace")
+        required_policy_terms = (
+            "mcp_workflow_start_task",
+            "mcp_workflow_finish_checklist",
+            "Workflow/Obsidian MCP before Obsidian claims",
+            "Candidate paths are routing metadata",
+        )
+        aligned = all(term in codex_text for term in required_policy_terms)
+        detail = "Codex codex-workflow contains required Workflow MCP policy terms" if aligned else "Codex codex-workflow missing required Workflow MCP policy terms"
+        checks.append(_surface_check("codex_workflow_skill_codex", "ok" if aligned else "warn", detail, str(codex_skill)))
+        if not aligned:
+            drift.append({"surface": "codex_workflow_skill_codex", "codex": str(codex_skill), "source": str(source_skill), "kind": "policy_alignment_missing"})
+    else:
+        checks.append(_surface_check("codex_workflow_skill_codex", "warn", "Codex or source codex-workflow skill missing", str(codex_skill)))
+
+    source_contract_root = repo_path / "skills/workflow-contracts"
+    hermes_contract_root = home / ".hermes/skills/workflow-contracts"
+    codex_contract_root = codex_root / "skills"
+    for skill_name in BUCKET_SKILL_NAMES.values():
+        source_skill_path = source_contract_root / skill_name / "SKILL.md"
+        hermes_skill_path = hermes_contract_root / skill_name / "SKILL.md"
+        codex_skill_path = codex_contract_root / skill_name / "SKILL.md"
+        for surface, target_path in (("hermes", hermes_skill_path), ("codex", codex_skill_path)):
+            check_name = f"{surface}_{skill_name}"
+            if not source_skill_path.exists() or not target_path.exists():
+                checks.append(_surface_check(check_name, "warn", "source or installed contract skill missing", str(target_path)))
+                continue
+            same = source_skill_path.read_bytes() == target_path.read_bytes()
+            checks.append(_surface_check(check_name, "ok" if same else "warn", "contract skill matches source" if same else "contract skill drift", str(target_path)))
+            if not same:
+                drift.append({"surface": check_name, "source": str(source_skill_path), "installed": str(target_path), "kind": "content_mismatch"})
+
     try:
         if health_payload is not None:
             health = health_payload
@@ -1169,6 +1311,7 @@ def validate_surfaces(
 __all__ = [
     "BUCKETS",
     "BUCKET_CONTRACTS",
+    "BUCKET_SKILL_NAMES",
     "DELEGATE_TASK_BUCKETS",
     "classify_task",
     "discover_context",

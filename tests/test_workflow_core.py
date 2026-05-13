@@ -12,9 +12,11 @@ import workflow_core as core  # noqa: E402
 
 def test_every_bucket_has_contract_and_delegate_enum_names_match():
     assert set(core.BUCKETS) == set(core.BUCKET_CONTRACTS)
+    assert set(core.BUCKETS) == set(core.BUCKET_SKILL_NAMES)
     assert core.DELEGATE_TASK_BUCKETS == set(core.BUCKETS)
     assert "repo_maintenance" in core.DELEGATE_TASK_BUCKETS
     assert "repo-maintenance" not in core.DELEGATE_TASK_BUCKETS
+    assert core.BUCKET_SKILL_NAMES["debug"] == "workflow-debug-contract"
 
 
 def test_contract_defaults_for_trivia_ambiguous_heavy_debug():
@@ -50,6 +52,7 @@ def test_start_task_packet_for_non_trivia_and_trivia(tmp_path, monkeypatch):
     packet = core.start_task("execute workflow MCP oracle implementation", repo="hermes-config")
     assert packet["bucket"] == "script"
     assert "codex-workflow" in packet["required_skills"]
+    assert "workflow-script-contract" in packet["required_skills"]
     assert packet["delegation_should_be_considered"] is True
     assert packet["first_move"]
     assert packet["must_not_do_before"]
@@ -62,6 +65,7 @@ def test_start_task_packet_for_non_trivia_and_trivia(tmp_path, monkeypatch):
     trivia = core.start_task("what is 2+2")
     assert trivia["bucket"] == "trivia"
     assert trivia["obsidian_required"] is False
+    assert "workflow-trivia-contract" in trivia["required_skills"]
     assert trivia["delegation_should_be_considered"] is False
 
 
@@ -83,6 +87,7 @@ def test_discover_context_scopes_and_caps(tmp_path):
     (project / "workflow-mcp.md").write_text("Workflow MCP LaunchAgent service notes", encoding="utf-8")
     (knowledge / "launchd.md").write_text("Reusable launchd and MCP service pattern", encoding="utf-8")
     (knowledge / "generic.md").write_text("checklist context start finish user provided", encoding="utf-8")
+    (knowledge / "current-status-required-context.md").write_text("current status required context user provided", encoding="utf-8")
     (org / "hermes.md").write_text("Hermes workflow mcp operational convention", encoding="utf-8")
     (clipping / "workflow.md").write_text("workflow mcp should not be searched by default", encoding="utf-8")
 
@@ -94,6 +99,11 @@ def test_discover_context_scopes_and_caps(tmp_path):
     assert "Knowledge/generic.md" not in paths
     assert result["candidates"][0]["match_class"] in {"must_read", "likely_relevant"}
     assert "Projects/hermes-config" in result["searched_roots"]
+
+    generic = core.discover_context("current status required context", vault_root=str(vault), max_candidates=1)
+    assert generic["candidates"]
+    assert generic["candidates"][0]["match_class"] != "must_read"
+    assert "why_not_stronger" in generic["candidates"][0]
 
 
 def test_workflow_namespace_terms_are_searchable():
@@ -182,8 +192,31 @@ def test_delegation_suggestions_use_valid_buckets():
     assert ".gitlab-ci.yml" in debug["extracted_signals"]["paths"]
     assert any(".gitlab-ci.yml" in t["goal"] for t in debug["tasks"])
     assert any("screenshot artifact missing" in t["goal"] for t in debug["tasks"])
+    assert all("Mutation boundary: read-only" in t["context"] for t in debug["tasks"])
+    assert all("Parent will verify" in t["context"] for t in debug["tasks"])
     research = core.suggest_delegation("compare workflow options", bucket="research")
     assert len(research["tasks"]) >= 2
+
+
+def test_start_task_override_preserves_prompt_derived_risk(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    (vault / "Knowledge").mkdir(parents=True)
+    (vault / "Knowledge" / "architecture.md").write_text("architecture tradeoff note", encoding="utf-8")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    packet = core.start_task(
+        "compare architecture tradeoffs for workflow MCP but keep this as light ops",
+        repo="hermes-config",
+        already_classified_bucket="light_ops",
+    )
+
+    assert packet["bucket"] == "light_ops"
+    assert packet["bucket_decision"]["selected"] == "light_ops"
+    assert packet["obsidian_required"] is True
+    assert packet["reasoning_guard_required"] is True
+    assert "workflow-light-ops-contract" in packet["required_skills"]
+    assert "obsidian" in packet["required_skills"]
+    assert packet["candidate_notes"]
 
 
 def test_start_task_can_return_selected_fields(tmp_path, monkeypatch):
@@ -262,7 +295,7 @@ def test_validate_surfaces_reports_drift_without_writes(tmp_path, monkeypatch):
     repo = home / "src" / "hermes-config"
     live = home / ".hermes" / "scheduled-tasks" / "workflow-mcp"
     mirror = repo / "scheduled-tasks" / "workflow-mcp"
-    for root in (live, mirror, repo / "skills" / "codex-workflow", repo / "hooks", home / ".hermes" / "skills" / "codex-workflow", home / ".hermes" / "hooks", home / "Library" / "LaunchAgents"):
+    for root in (live, mirror, repo / "skills" / "codex-workflow", repo / "hooks", home / ".hermes" / "skills" / "codex-workflow", home / ".hermes" / "hooks", home / ".codex" / "hooks", home / ".codex" / "skills" / "codex-workflow", home / "Library" / "LaunchAgents"):
         root.mkdir(parents=True, exist_ok=True)
     for name in ["workflow_core.py", "server.py", "metrics.py", "run.sh", "com.filipp.hermes-workflow-mcp.plist"]:
         (live / name).write_text("same", encoding="utf-8")
@@ -278,9 +311,27 @@ def test_validate_surfaces_reports_drift_without_writes(tmp_path, monkeypatch):
         (repo / "hooks" / hook).write_text("hook", encoding="utf-8")
     (home / ".hermes" / "config.yaml").parent.mkdir(parents=True, exist_ok=True)
     (home / ".hermes" / "config.yaml").write_text("mcp_servers:\n  workflow:\n    url: http://127.0.0.1:8813/mcp\n", encoding="utf-8")
+    (home / ".codex" / "config.toml").write_text('[mcp_servers.workflow]\nurl = "http://127.0.0.1:8813/mcp"\n', encoding="utf-8")
+    (home / ".codex" / "hooks.json").write_text("{}", encoding="utf-8")
+    for hook in ["classify-task-reminder.sh", "obsidian-index.sh"]:
+        (home / ".codex" / "hooks" / hook).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    aligned_codex_policy = "mcp_workflow_start_task mcp_workflow_finish_checklist Workflow/Obsidian MCP before Obsidian claims Candidate paths are routing metadata"
+    (home / ".codex" / "skills" / "codex-workflow" / "SKILL.md").write_text(aligned_codex_policy, encoding="utf-8")
+    for skill_name in core.BUCKET_SKILL_NAMES.values():
+        source = repo / "skills" / "workflow-contracts" / skill_name
+        hermes = home / ".hermes" / "skills" / "workflow-contracts" / skill_name
+        codex = home / ".codex" / "skills" / skill_name
+        for root in (source, hermes, codex):
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "SKILL.md").write_text(skill_name, encoding="utf-8")
     monkeypatch.setattr(core.Path, "home", lambda: home)
 
     result = core.validate_surfaces(repo_root=str(repo), live_root=str(live), mirror_root=str(mirror), health_url="http://127.0.0.1:1/health")
     assert result["status"] in {"warn", "error"}
     assert any(item["surface"] == "codex_workflow_skill" for item in result["drift"])
+    by_name = {item["name"]: item for item in result["checks"]}
+    assert by_name["codex_config_workflow_mcp"]["status"] == "ok"
+    assert by_name["codex_hooks_json"]["status"] == "ok"
+    assert by_name["codex_workflow_skill_codex"]["status"] == "ok"
+    assert by_name["codex_workflow-debug-contract"]["status"] == "ok"
     assert result["suggested_fix_plan"]
