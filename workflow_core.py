@@ -292,6 +292,7 @@ def classify_task(prompt: str, cwd: str | None = None, repo: str | None = None) 
 
     raw_prompt = prompt or ""
     text = raw_prompt.lower()
+    normalized_text = re.sub(r"\s+", " ", text.strip(" \t\n\r.!?"))
     word_count = len(re.findall(r"\w+", text))
     scores = {bucket: 0 for bucket in BUCKETS}
     reasons: dict[str, list[str]] = {bucket: [] for bucket in BUCKETS}
@@ -329,6 +330,16 @@ def classify_task(prompt: str, cwd: str | None = None, repo: str | None = None) 
     if _contains(text, ("fix failing", "failing test", "pipeline failure", "release pipeline failure")):
         scores["debug"] += 5
         reasons["debug"].append("explicit failure to diagnose")
+    task_style_check = (
+        normalized_text == "check"
+        or re.search(
+            r"^check\s+(?:status|state|health|failure|failures|failing|error|errors|bug|bugs|regression|regressions|broken|logs?|tests?|ci|pipeline|build|issue|issues|problem|problems)\b",
+            normalized_text,
+        ) is not None
+    )
+    if task_style_check and not any(scores[b] for b in ("heavy_ops", "app_code", "script", "repo_maintenance")):
+        scores["debug"] += 6
+        reasons["debug"].append("task-style check implies investigation")
     if _contains(text, ("compare", "options", "recommend", "should we")) and not mutation:
         scores["research"] += 10
         reasons["research"].append("comparison/recommendation request without immediate edits")

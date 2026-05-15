@@ -1,4 +1,5 @@
 {"case_id":"debug-github-actions-workflow-failed","prompt":"workflow in GitHub Actions failed with timeout","bucket_primary":"debug","bucket_acceptable":["debug"],"reasoning_guard_required":true}
+{"case_id":"debug-bare-check","prompt":"check","bucket_primary":"debug","bucket_acceptable":["debug"],"reasoning_guard_required":true}
 {"case_id":"research-workflow-mcp-options","prompt":"compare Workflow MCP implementation options","bucket_primary":"research","bucket_acceptable":["research"],"reasoning_guard_required":false}
 {"case_id":"script-workflow-mcp-launchagent","prompt":"add LaunchAgent for Workflow MCP","bucket_primary":"script","bucket_acceptable":["script"],"reasoning_guard_required":true}
 {"case_id":"light-ops-prod-matrix-labels-only","prompt":"add prod deploy matrix labels only in GitLab CI, no secret values and no runtime config changes","bucket_primary":"light_ops","bucket_acceptable":["light_ops","repo_maintenance"],"reasoning_guard_required":false}

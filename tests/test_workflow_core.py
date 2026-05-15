@@ -29,6 +29,8 @@ def test_contract_defaults_for_trivia_ambiguous_heavy_debug():
 def test_classifier_real_workflow_examples():
     cases = {
         "fix failing release pipeline screenshot job": "debug",
+        "check": "debug",
+        "check regression status": "debug",
         "compare options for workflow MCP server": "research",
         "update typo in README": "trivia",
         "add LaunchAgent for workflow MCP": "script",
@@ -41,6 +43,27 @@ def test_classifier_real_workflow_examples():
         result = core.classify_task(prompt)
         assert result["bucket"] == expected, result
         assert result["visible_statement"].startswith("Bucket: ")
+
+
+def test_task_style_check_routes_to_debug_without_checklist_overmatch():
+    bare = core.classify_task("check")
+    assert bare["bucket"] == "debug"
+    assert bare["obsidian_required"] is True
+    assert bare["reasoning_guard_required"] is True
+    assert "task-style check implies investigation" in bare["why"]
+
+    state_check = core.classify_task("check status")
+    assert state_check["bucket"] == "debug"
+
+    checklist = core.classify_task("finish checklist")
+    assert checklist["bucket"] != "debug"
+
+    packet = core.start_task("check", repo="hermes-config")
+    assert packet["bucket"] == "debug"
+    assert "workflow-debug-contract" in packet["required_skills"]
+    assert "systematic-debugging" in packet["required_skills"]
+    assert "obsidian" in packet["required_skills"]
+    assert packet["reasoning_guard"]["required"] is True
 
 
 def test_start_task_packet_for_non_trivia_and_trivia(tmp_path, monkeypatch):

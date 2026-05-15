@@ -13,6 +13,7 @@ sys.path.insert(0, str(TASK_DIR))
 from workflow_core import classify_task, finish_checklist, start_task, suggest_delegation, validate_surfaces  # noqa: E402
 
 CASES = [
+    ("debug", lambda: classify_task("check")),
     ("debug", lambda: classify_task("fix failing test in hermes-agent")),
     ("research", lambda: classify_task("compare workflow MCP implementation options")),
     ("trivia", lambda: classify_task("update typo in README")),
