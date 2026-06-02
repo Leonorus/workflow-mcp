@@ -37,6 +37,10 @@ def test_classifier_real_workflow_examples():
         "dependency bump and CI cleanup": "repo_maintenance",
         "deploy production Kubernetes cluster migration with rollback": "heavy_ops",
         "add prod deploy matrix labels only in GitLab CI, no secret values and no runtime config changes": "light_ops",
+        "code review only": "research",
+        "repo investigation only, no edits": "research",
+        "read-only investigation only": "research",
+        "debug this failure read-only": "debug",
         "make it better": "ambiguous",
     }
     for prompt, expected in cases.items():
@@ -219,6 +223,29 @@ def test_delegation_suggestions_use_valid_buckets():
     assert all("Parent will verify" in t["context"] for t in debug["tasks"])
     research = core.suggest_delegation("compare workflow options", bucket="research")
     assert len(research["tasks"]) >= 2
+    light_ops = core.suggest_delegation("add prod deploy matrix labels only in GitLab CI, no secret values and no runtime config changes", bucket="light_ops")
+    assert light_ops["should_delegate"] is True
+    assert light_ops["read_only_delegation_authorized"] is True
+    assert all("Read-only delegation is explicitly user-authorized" in t["context"] for t in light_ops["tasks"])
+
+
+def test_read_only_review_and_investigation_delegate():
+    prompts = [
+        "code review only",
+        "repo investigation only, no edits",
+        "read-only investigation only",
+        "investigate and review this repo without edits",
+    ]
+    for prompt in prompts:
+        packet = core.start_task(prompt)
+        assert packet["bucket"] == "research", packet
+        assert packet["delegation_should_be_considered"] is True
+        assert packet["delegation"]["read_only_delegation_authorized"] is True
+        assert all("Mutation boundary: read-only" in task["context"] for task in packet["delegation"]["tasks"])
+
+    debug_packet = core.start_task("debug this failure read-only")
+    assert debug_packet["bucket"] == "debug"
+    assert debug_packet["delegation_should_be_considered"] is True
 
 
 def test_start_task_override_preserves_prompt_derived_risk(tmp_path, monkeypatch):

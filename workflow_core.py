@@ -82,7 +82,7 @@ BUCKET_CONTRACTS: dict[str, dict[str, Any]] = {
     "light_ops": {
         "first_move": "Inspect nearby convention before editing.",
         "context_required": "Use repo-native lint/fmt/schema checks; no Obsidian unless design risk appears.",
-        "delegation_default": "Usually direct; optionally one cheap reviewer/validator child.",
+        "delegation_default": "Usually direct; read-only reviewer/validator delegation is free when useful.",
         "verification_and_finish": "Targeted lint/fmt/check; summarize and escalate if scope grows.",
         "obsidian_required": False,
         "reasoning_guard_triggers": ["design risk", "scope grows", "prod/secrets/network boundary appears"],
@@ -91,7 +91,7 @@ BUCKET_CONTRACTS: dict[str, dict[str, Any]] = {
     "heavy_ops": {
         "first_move": "Name blast radius, assumptions, rollback/dry-run path.",
         "context_required": "Consult Obsidian Knowledge Workflow before proposing approach.",
-        "delegation_default": "Parallelize read-only discovery, risk review, and validation-plan review; parent keeps destructive actions.",
+        "delegation_default": "Freely parallelize read-only discovery, risk review, and validation-plan review; parent keeps destructive actions.",
         "verification_and_finish": "Lint/validate/render/dry-run/smoke as applicable; docs and raw Obsidian note for concrete findings/fixes.",
         "obsidian_required": True,
         "reasoning_guard_triggers": ["prod", "network", "secrets", "permissions", "data migration", "rollback-sensitive paths"],
@@ -100,7 +100,7 @@ BUCKET_CONTRACTS: dict[str, dict[str, Any]] = {
     "app_code": {
         "first_move": "Define success criteria and inspect existing test shape.",
         "context_required": "Inspect project conventions; use TDD/review skills when behavior changes or tests exist.",
-        "delegation_default": "Use implementer/reviewer subagents for independent modules only.",
+        "delegation_default": "Read-only reviewers and test-shape inspectors are free; use implementer subagents for independent modules only.",
         "verification_and_finish": "Targeted tests first, broader checks as needed; update docs if API/workflow changed.",
         "obsidian_required": False,
         "reasoning_guard_triggers": ["risky refactor", "cross-module behavior change", "high confidence requested"],
@@ -118,7 +118,7 @@ BUCKET_CONTRACTS: dict[str, dict[str, Any]] = {
     "debug": {
         "first_move": "Reproduce or observe the exact failure before fixing.",
         "context_required": "Consult Obsidian for prior incidents/patterns; use systematic debugging for unclear root cause.",
-        "delegation_default": "Spawn an independent investigator when the bug is unclear: repro/logs vs code-path/config.",
+        "delegation_default": "Freely spawn read-only investigators when the bug is unclear: repro/logs vs code-path/config.",
         "verification_and_finish": "Verify the exact failure is gone; note concrete root cause/fix unless duplicate/trivial.",
         "obsidian_required": True,
         "reasoning_guard_triggers": ["unclear root cause", "multiple plausible causes", "repeated failed fixes"],
@@ -127,7 +127,7 @@ BUCKET_CONTRACTS: dict[str, dict[str, Any]] = {
     "research": {
         "first_move": "State the question, decision needed, and evidence bar.",
         "context_required": "Use Obsidian for Ops/Infra, Debug, architecture, or reusable research; use upstream docs/source when relevant.",
-        "delegation_default": "Use 2-3 researchers when scope permits: upstream, local, and prior Obsidian/org alternatives.",
+        "delegation_default": "Freely use 2-3 read-only researchers when scope permits: upstream, local, and prior Obsidian/org alternatives.",
         "verification_and_finish": "Report facts, assumptions, recommendation, confidence, risks, and next checks; no code changes.",
         "obsidian_required": False,
         "reasoning_guard_triggers": ["architecture", "migration", "tradeoffs", "reusable research"],
@@ -136,7 +136,7 @@ BUCKET_CONTRACTS: dict[str, dict[str, Any]] = {
     "repo_maintenance": {
         "first_move": "Check git status/diff and preserve unrelated user changes.",
         "context_required": "Inspect affected areas: CI, deps, docs, tests, release metadata, config conventions.",
-        "delegation_default": "Split independent inspectors where useful: CI, deps, docs, tests, release metadata.",
+        "delegation_default": "Freely split independent read-only inspectors where useful: CI, deps, docs, tests, release metadata.",
         "verification_and_finish": "Run affected checks, report unrelated findings separately, update docs/notes if conventions change.",
         "obsidian_required": False,
         "reasoning_guard_triggers": ["workflow policy", "hooks", "multi-surface config", "architecture conventions"],
@@ -186,7 +186,9 @@ _KEYWORDS = {
     ),
     "research": (
         "research", "compare", "options", "tradeoff", "tradeoffs", "explain", "how does", "how do", "why",
-        "design", "architecture", "investigate", "explore", "evaluate", "recommend", "should we",
+        "design", "architecture", "investigate", "investigation", "inspect", "explore", "evaluate", "recommend",
+        "should we", "code review", "repo investigation", "repository investigation", "repo review", "read-only",
+        "read only",
     ),
     "repo_maintenance": (
         "dependency", "dependencies", "bump", "upgrade", "cleanup", "clean up", "repo hygiene", "stale config",
@@ -330,6 +332,14 @@ def classify_task(prompt: str, cwd: str | None = None, repo: str | None = None) 
     if _contains(text, ("fix failing", "failing test", "pipeline failure", "release pipeline failure")):
         scores["debug"] += 5
         reasons["debug"].append("explicit failure to diagnose")
+    read_only_request = _contains(text, ("read-only", "read only", "no edits", "do not edit", "without edits"))
+    read_only_investigation = (
+        _contains(text, ("code review", "repo investigation", "repository investigation", "repo review", "inspect repo", "inspect this repo"))
+        or (read_only_request and _contains(text, ("review", "inspect", "investigate", "investigation", "research", "explore")))
+    )
+    if read_only_investigation:
+        scores["research"] += 8
+        reasons["research"].append("read-only review/investigation request")
     task_style_check = (
         normalized_text == "check"
         or re.search(
@@ -858,6 +868,7 @@ def _signal_summary(signals: dict[str, list[str]]) -> str:
 def _delegation_result(should_delegate: bool, why: str, tasks: list[dict[str, Any]], warnings: list[str], signals: dict[str, list[str]]) -> dict[str, Any]:
     return {
         "should_delegate": should_delegate,
+        "read_only_delegation_authorized": bool(tasks),
         "why": why,
         "tasks": tasks,
         "warnings": warnings,
@@ -879,6 +890,7 @@ def suggest_delegation(prompt: str, bucket: str | None = None, cwd: str | None =
     context_lines = [
         f"Bucket: {bucket}.",
         "Mutation boundary: read-only; do not mutate files, git history, remote systems, notes, or runtime config.",
+        "Read-only delegation is explicitly user-authorized and free for review, repo investigation, debugging, research, and validation planning; do not ask for a separate confirmation unless the child may mutate state or access restricted external systems.",
         f"Exact goal from parent prompt: {prompt}",
         f"Repo: {repo_name or 'unknown'}",
         f"First-move contract: {contract['first_move']}",
@@ -898,7 +910,7 @@ def suggest_delegation(prompt: str, bucket: str | None = None, cwd: str | None =
     if bucket == "ambiguous":
         return _delegation_result(False, "Clarify scope before spawning children.", [], ["ambiguous_scope"], signals)
     if bucket == "light_ops":
-        return _delegation_result(False, "Light Ops is usually a single surgical edit; consider only a cheap validator.", [_task(f"Validate the proposed small ops/config change for syntax and convention fit{focus}", base_context, ["terminal", "file"], "light_ops", "medium")], [], signals)
+        return _delegation_result(True, "Light Ops is usually a single surgical edit, but read-only validator delegation is free when useful.", [_task(f"Validate the proposed small ops/config change for syntax and convention fit{focus}", base_context, ["terminal", "file"], "light_ops", "medium")], [], signals)
     if bucket == "script":
         return _delegation_result(True, "Non-trivial script/service work benefits from one independent reviewer after implementation.", [_task(f"Review script/service implementation for idempotency, launch/runtime safety, and smoke-test coverage{focus}", base_context, ["terminal", "file"], "script", "medium")], ["parent_keeps_launchctl_and_config_mutations"] if destructive else [], signals)
     if bucket == "research":
