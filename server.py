@@ -21,7 +21,7 @@ TASK_DIR = Path(__file__).resolve().parent
 if str(TASK_DIR) not in sys.path:
     sys.path.insert(0, str(TASK_DIR))
 
-from metrics import current_service_version, health_stats, record_call  # noqa: E402
+from metrics import health_stats, record_call  # noqa: E402
 from workflow_core import (  # noqa: E402
     discover_context as core_discover_context,
     finish_checklist as core_finish_checklist,
@@ -57,7 +57,6 @@ def _with_metrics(tool: str, args: dict[str, Any], fn: Callable[[], T]) -> T:
 @mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
 async def health(_: Request) -> JSONResponse:
     stats = health_stats()
-    stats.setdefault("current_source_version", current_service_version())
     return JSONResponse({"status": "ok", "service": "workflow-mcp", "tools": TOOL_COUNT, **stats})
 
 

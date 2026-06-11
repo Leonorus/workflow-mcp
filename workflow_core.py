@@ -805,7 +805,7 @@ def start_task(
         context = discover_context(prompt, repo=repo_name, cwd=cwd, max_candidates=8, include_snippets=False)
     delegation = {"should_delegate": False, "tasks": [], "warnings": [], "why": "not requested"}
     if need_fields is None or need_fields & {"delegation_should_be_considered", "delegation_hint"}:
-        delegation = suggest_delegation(prompt, bucket=bucket, cwd=cwd, repo=repo_name)
+        delegation = suggest_delegation(prompt, bucket=bucket, cwd=cwd, repo=repo_name, classification=classification)
     finish = {"checklist": [], "suggested_note_path": None}
     if need_fields is None or need_fields & {"finish_checklist", "finish_requirements", "suggested_note_path"}:
         finish = finish_checklist(bucket=bucket, changed_files=[], commands_run=[], findings=prompt[:160], repo=repo_name)
@@ -897,15 +897,23 @@ def _delegation_result(should_delegate: bool, why: str, tasks: list[dict[str, An
     }
 
 
-def suggest_delegation(prompt: str, bucket: str | None = None, cwd: str | None = None, repo: str | None = None) -> dict[str, Any]:
+def suggest_delegation(
+    prompt: str,
+    bucket: str | None = None,
+    cwd: str | None = None,
+    repo: str | None = None,
+    classification: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if classification is None:
+        classification = classify_task(prompt, cwd=cwd, repo=repo)
     if bucket is None:
-        bucket = classify_task(prompt, cwd=cwd, repo=repo)["bucket"]
+        bucket = classification["bucket"]
     bucket = _validate_bucket(bucket)
     repo_name = _repo_name(repo, cwd)
     signals = _extract_delegation_signals(prompt)
     summary = _signal_summary(signals)
     contract = BUCKET_CONTRACTS[bucket]
-    local_risk_axes = _risk_axes_for(prompt, bucket, classify_task(prompt, cwd=cwd, repo=repo))
+    local_risk_axes = _risk_axes_for(prompt, bucket, classification)
     forbidden = "; ".join(_must_not_do_before(bucket, local_risk_axes)[:2])
     context_lines = [
         f"Bucket: {bucket}.",

@@ -169,6 +169,7 @@ def record_call(tool: str, started: float, success: bool, args: dict[str, Any] |
 
 
 def health_stats() -> dict[str, Any]:
+    current = current_service_version()
     return {
         "uptime_seconds": round(time.time() - STARTED_AT, 2),
         "request_count": _REQUEST_COUNT,
@@ -176,6 +177,6 @@ def health_stats() -> dict[str, Any]:
         "last_error_type": _LAST_ERROR_TYPE,
         "metrics_path": str(CALLS_PATH),
         "process_service_version": PROCESS_SERVICE_VERSION,
-        "current_source_version": current_service_version(),
-        "service_version": current_service_version(),
+        "current_source_version": current,
+        "service_version": current,
     }
