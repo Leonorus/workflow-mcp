@@ -25,14 +25,13 @@ Fresh Codex sessions may need restart to see newly registered MCP tools.
 
 ## MCP tools
 
-V1.5 exposes six MCP tools over nine workflow buckets (`trivia`, `light_ops`, `heavy_ops`, `app_code`, `script`, `debug`, `research`, `repo_maintenance`, `ambiguous`):
+V2 exposes three MCP tools over nine workflow buckets (`trivia`, `light_ops`, `heavy_ops`, `app_code`, `script`, `debug`, `research`, `repo_maintenance`, `ambiguous`):
 
-- `start_task` — full start packet: bucket, visible statement, Codex skill names, Obsidian requirement, context candidates, delegation hint, contract, finish checklist, `first_move`, `must_not_do_before`, `risk_axes`, `required_evidence`, `bucket_decision`, `reasoning_guard`, and `finish_requirements`. Optional `fields` returns only requested top-level fields to reduce token use and avoid unused expensive sections.
-- `classify_task` — small classification result with confidence, ambiguity, why, and escalation flags.
-- `discover_context` — direct-keyword Obsidian candidates from `Projects/<repo>/`, `Knowledge/`, and `Organization/`; accepts either a repo slug or absolute checkout path and returns paths/reasons/snippets only when requested. Optional `inline_top_n` and `inline_max_chars` inline the top candidates' note bodies to avoid duplicate reads.
-- `suggest_delegation` — prompt-aware `delegate_task` workstreams with valid `task_bucket` enum names plus extracted paths/tickets/error text when available.
+- `start_task` — full start packet: bucket, visible statement, Codex skill names, Obsidian requirement, context candidates, delegation hint, contract, finish checklist, `first_move`, `must_not_do_before`, `risk_axes`, `required_evidence`, `bucket_decision`, `reasoning_guard`, and `finish_requirements`. Optional `fields` returns only requested top-level fields; unknown field names come back under `unknown_fields`. When `already_classified_bucket` overrides the classifier, the packet includes `override: {from, to}`.
+- `discover_context` — direct-keyword Obsidian candidates from `Projects/<repo>/`, `Knowledge/`, and `Organization/`; accepts either a repo slug or absolute checkout path and returns paths/reasons/snippets only when requested. Optional `inline_top_n` and `inline_max_chars` inline the top candidates' note bodies to avoid duplicate reads. Repo-slug tokens select roots and boost note paths but are excluded from relevance scoring.
 - `finish_checklist` — verification/docs/note/memory/skill-maintenance checklist from bucket and changed files. Optional `repo_root` + `auto_detect_changes` asks git for changed/untracked paths instead of trusting caller-supplied `changed_files`. Phase 2 fields include required checks, missing verification/docs/notes/skill actions, `unsafe_to_finalize`, subagent/side-effect review reminders, and final-response requirements.
-- `validate_surfaces` — read-only drift checks for live/mirror Workflow MCP files, Codex workflow skills, workflow hooks, source/installed LaunchAgent plist, Codex MCP config, and health/version metadata.
+
+`classify_task` and `suggest_delegation` remain importable from `workflow_core` but are no longer exposed as MCP tools (near-zero call volume; `start_task` subsumes both). Unknown bucket names return a structured `{"error": "unknown_bucket", "closest": ...}` result instead of a protocol error. `validate_surfaces` was removed entirely; compare live vs mirror manually (`diff -r`/`cmp`) when needed.
 
 ## Telemetry
 
@@ -42,7 +41,7 @@ The MCP wrapper records privacy-safe per-call JSONL metrics to:
 ~/.hermes/scheduled-tasks/workflow-mcp/logs/calls.jsonl
 ```
 
-Raw prompts are not logged. Events include prompt hash/word count, tool name, success, duration, service version, bucket/confidence where present, escalation flag count, candidate/checklist/task counts, selected fields, surface validation status/check/drift counts, and error type. `/health` includes uptime, request count, error count, last error type, process-cached service version, current source version, and metrics path.
+Raw prompts are not logged. Events include prompt hash/word count, tool name, success, duration, service version, bucket/confidence where present, escalation flag count, candidate/checklist/task counts, selected fields, classifier overrides (`override_from`/`override_to` — mine these into `evals/golden.jsonl`), and error type. `/health` includes uptime, request count, error count, last error type, process-cached service version, current source version, and metrics path.
 
 Analyze telemetry manually:
 
