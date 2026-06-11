@@ -353,3 +353,17 @@ def test_unknown_bucket_returns_structured_error():
     assert result["closest"] in core.BUCKETS
     packet = core.start_task("fix prod tls", already_classified_bucket="heavy-opsx")
     assert packet["error"] == "unknown_bucket"
+
+
+def test_repo_slug_tokens_do_not_inflate_relevance(tmp_path):
+    vault = tmp_path / "vault"
+    project = vault / "Projects" / "filipp.vysokov"
+    project.mkdir(parents=True)
+    (project / "certbot-renewal.md").write_text("filipp vysokov certbot wildcard renewal blocked", encoding="utf-8")
+    (project / "retry-logic.md").write_text("retry logic backoff improvements", encoding="utf-8")
+
+    result = core.discover_context("improve retry logic backoff", repo="filipp.vysokov", vault_root=str(vault))
+    by_path = {c["path"]: c for c in result["candidates"]}
+    assert result["candidates"][0]["path"] == "Projects/filipp.vysokov/retry-logic.md"
+    certbot = by_path.get("Projects/filipp.vysokov/certbot-renewal.md")
+    assert certbot is None or certbot["match_class"] != "must_read"

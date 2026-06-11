@@ -579,10 +579,11 @@ def discover_context(
     if not vault.exists():
         return {"candidates": [], "warnings": [f"vault root not found: {vault}"], "searched_roots": []}
 
+    # Repo-slug tokens select roots and boost note paths but stay out of the
+    # prompt term set: slug words ("filipp", "vysokov") match every note in the
+    # project and would inflate unrelated candidates to must_read.
     repo_name = _repo_name(repo, cwd)
     terms = _tokens(prompt)
-    if repo_name:
-        terms.update(_tokens(repo_name))
 
     roots: list[Path] = []
     if repo_name:
@@ -612,7 +613,7 @@ def discover_context(
         matched = sorted(name_hits | content_hits)
         if not matched:
             continue
-        domain_hits = {t for t in matched if t in _CONTEXT_DOMAIN_TERMS or t in repo_terms}
+        domain_hits = {t for t in matched if t in _CONTEXT_DOMAIN_TERMS}
         exact_phrase_hit = any(
             phrase in prompt_lower and phrase.replace(" ", "-") in entry["lower_name"].replace("_", "-")
             for phrase in _CONTEXT_EXACT_PHRASES
@@ -622,7 +623,7 @@ def discover_context(
             score += max(1, _context_term_weight(term)) * 4
         for term in content_hits:
             score += _context_term_weight(term)
-        if repo_terms and name_hits & repo_terms:
+        if repo_terms and any(t in entry["lower_name"] for t in repo_terms):
             score += 5
         if exact_phrase_hit:
             score += 8
