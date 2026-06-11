@@ -1020,7 +1020,7 @@ def _required_checks_for_files(changed_files: list[str]) -> list[dict[str, str]]
         add("codex_config", "codex mcp list and codex mcp get for changed MCP servers", "Codex MCP config changed")
     if any("workflow-mcp" in path for path in changed_files):
         add("workflow_smoke", "workflow-mcp smoke.py and direct MCP smoke", "Workflow MCP changed")
-        add("surface_validation", "cmp/diff live ~/.hermes/scheduled-tasks/workflow-mcp vs repo mirror", "Workflow surfaces changed")
+        add("surface_validation", "cmp/diff live ~/.hermes/scheduled-tasks/workflow-mcp vs source repo ~/Projects/workflow-mcp", "Workflow surfaces changed")
     if any("README" in path or "AGENTS.md" in path or "/docs/" in path for path in changed_files):
         add("docs_review", "review docs commands and paths", "Documentation changed")
     return checks

@@ -50,7 +50,7 @@ def _service_version() -> str:
     if env_version:
         return env_version
     candidates = [TASK_DIR]
-    source_repo = os.environ.get("HERMES_WORKFLOW_MCP_SOURCE_REPO", "~/src/hermes-config")
+    source_repo = os.environ.get("HERMES_WORKFLOW_MCP_SOURCE_REPO", "~/Projects/workflow-mcp")
     candidates.append(Path(source_repo).expanduser())
     for candidate in candidates:
         try:
@@ -68,7 +68,7 @@ def _service_version() -> str:
         if proc.returncode == 0 and version:
             try:
                 dirty = subprocess.run(
-                    ["git", "-C", str(candidate), "status", "--porcelain", "--", "scheduled-tasks/workflow-mcp"],
+                    ["git", "-C", str(candidate), "status", "--porcelain", "--", "."],
                     check=False,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,

@@ -7,8 +7,8 @@ The canonical policy remains the `codex-workflow` skill. This service only opera
 ## Endpoint and launchd
 
 - Label: `com.filipp.hermes-workflow-mcp`
-- Source path: `~/.hermes/scheduled-tasks/workflow-mcp/`
-- Mirror path: `~/src/hermes-config/scheduled-tasks/workflow-mcp/`
+- Source repo: `~/Projects/workflow-mcp/` (this repo, `github.com/Leonorus/workflow-mcp`)
+- Live install: `~/.hermes/scheduled-tasks/workflow-mcp/`
 - MCP endpoint: `http://127.0.0.1:8813/mcp`
 - Health endpoint: `http://127.0.0.1:8813/health`
 - Logs: `~/.hermes/scheduled-tasks/workflow-mcp/logs/`
@@ -31,7 +31,7 @@ V2 exposes three MCP tools over nine workflow buckets (`trivia`, `light_ops`, `h
 - `discover_context` — direct-keyword Obsidian candidates from `Projects/<repo>/`, `Knowledge/`, and `Organization/`; accepts either a repo slug or absolute checkout path and returns paths/reasons/snippets only when requested. Optional `inline_top_n` and `inline_max_chars` inline the top candidates' note bodies to avoid duplicate reads. Repo-slug tokens select roots and boost note paths but are excluded from relevance scoring.
 - `finish_checklist` — verification/docs/note/memory/skill-maintenance checklist from bucket and changed files. Optional `repo_root` + `auto_detect_changes` asks git for changed/untracked paths instead of trusting caller-supplied `changed_files`. Phase 2 fields include required checks, missing verification/docs/notes/skill actions, `unsafe_to_finalize`, subagent/side-effect review reminders, and final-response requirements.
 
-`classify_task` and `suggest_delegation` remain importable from `workflow_core` but are no longer exposed as MCP tools (near-zero call volume; `start_task` subsumes both). Unknown bucket names return a structured `{"error": "unknown_bucket", "closest": ...}` result instead of a protocol error. `validate_surfaces` was removed entirely; compare live vs mirror manually (`diff -r`/`cmp`) when needed.
+`classify_task` and `suggest_delegation` remain importable from `workflow_core` but are no longer exposed as MCP tools (near-zero call volume; `start_task` subsumes both). Unknown bucket names return a structured `{"error": "unknown_bucket", "closest": ...}` result instead of a protocol error. `validate_surfaces` was removed entirely; compare the live install vs this repo manually (`diff -r`/`cmp`) when needed.
 
 ## Telemetry
 
@@ -69,22 +69,33 @@ Seed evals live under `evals/`:
 Run:
 
 ```bash
-~/.hermes/hermes-agent/venv/bin/python ~/.hermes/scheduled-tasks/workflow-mcp/eval.py
+~/.hermes/hermes-agent/venv/bin/python ~/Projects/workflow-mcp/eval.py
 ```
 
 ## Local verification
 
+Run from the repo checkout:
+
 ```bash
 PY=~/.hermes/hermes-agent/venv/bin/python
-$PY -m pytest ~/.hermes/scheduled-tasks/workflow-mcp/tests -q
-$PY -m py_compile ~/.hermes/scheduled-tasks/workflow-mcp/*.py
-$PY ~/.hermes/scheduled-tasks/workflow-mcp/eval.py
-zsh -n ~/.hermes/scheduled-tasks/workflow-mcp/run.sh
-zsh -n ~/.hermes/scheduled-tasks/workflow-mcp-analyzer/run.sh
-plutil -lint ~/.hermes/scheduled-tasks/workflow-mcp/com.filipp.hermes-workflow-mcp.plist
-plutil -lint ~/.hermes/scheduled-tasks/workflow-mcp-analyzer/com.filipp.hermes-workflow-mcp-analyzer.plist
-$PY ~/.hermes/scheduled-tasks/workflow-mcp/analyze_metrics.py --stdout
-$PY ~/.hermes/scheduled-tasks/workflow-mcp/smoke.py
+cd ~/Projects/workflow-mcp
+$PY -m pytest tests -q
+$PY -m py_compile *.py
+$PY eval.py
+$PY smoke.py
+zsh -n run.sh
+plutil -lint com.filipp.hermes-workflow-mcp.plist
+```
+
+## Deploy
+
+The repo is the source of truth; launchd runs the live install. Deploy with:
+
+```bash
+rsync -a --delete --exclude='logs/' --exclude='__pycache__/' --exclude='.git/' \
+  ~/Projects/workflow-mcp/ ~/.hermes/scheduled-tasks/workflow-mcp/
+launchctl kickstart -k "gui/$(id -u)/com.filipp.hermes-workflow-mcp"
+curl -fsS http://127.0.0.1:8813/health
 ```
 
 After installing/loading launchd:
