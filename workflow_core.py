@@ -801,10 +801,10 @@ def start_task(
     repo_name = _repo_name(repo, cwd)
     need_fields = set(fields) if fields is not None else None
     context = {"candidates": [], "warnings": []}
-    if need_fields is None or need_fields & {"candidate_notes", "context_candidates", "context_warnings"}:
+    if need_fields is None or need_fields & {"context_candidates", "context_warnings"}:
         context = discover_context(prompt, repo=repo_name, cwd=cwd, max_candidates=8, include_snippets=False)
     delegation = {"should_delegate": False, "tasks": [], "warnings": [], "why": "not requested"}
-    if need_fields is None or need_fields & {"delegation_should_be_considered", "delegation_hint", "delegation"}:
+    if need_fields is None or need_fields & {"delegation_should_be_considered", "delegation_hint"}:
         delegation = suggest_delegation(prompt, bucket=bucket, cwd=cwd, repo=repo_name)
     finish = {"checklist": [], "suggested_note_path": None}
     if need_fields is None or need_fields & {"finish_checklist", "finish_requirements", "suggested_note_path"}:
@@ -834,8 +834,6 @@ def start_task(
         },
         "delegation_should_be_considered": delegation["should_delegate"],
         "delegation_hint": delegation,
-        "delegation": delegation,
-        "candidate_notes": context["candidates"],
         "context_candidates": context["candidates"],
         "context_warnings": context["warnings"],
         "contract": BUCKET_CONTRACTS[bucket],
@@ -847,7 +845,11 @@ def start_task(
         packet["override"] = classification["override"]
     if fields is not None:
         requested = [field for field in fields if field in packet]
-        return {field: packet[field] for field in requested}
+        unknown = [field for field in fields if field not in packet]
+        out = {field: packet[field] for field in requested}
+        if unknown:
+            out["unknown_fields"] = {"requested": unknown, "valid": sorted(packet)}
+        return out
     return packet
 
 

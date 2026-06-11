@@ -89,7 +89,7 @@ def test_start_task_packet_for_non_trivia_and_trivia(tmp_path, monkeypatch):
     assert packet["bucket_decision"]["selected"] == "script"
     assert packet["reasoning_guard"]["required"] is True
     assert packet["finish_requirements"]["must_call_finish_checklist"] is True
-    assert packet["candidate_notes"]
+    assert packet["context_candidates"]
     assert packet["contract"]["first_move"]
 
     trivia = core.start_task("what is 2+2")
@@ -202,8 +202,8 @@ def test_absolute_repo_paths_are_normalized_for_context_and_notes(tmp_path, monk
     absolute_repo = "/Users/filipp.vysokov/src/hermes-config"
     packet = core.start_task("rewrite workflow to use Workflow MCP", repo=absolute_repo, cwd=absolute_repo)
     assert packet["context_warnings"] == []
-    assert packet["candidate_notes"]
-    assert packet["candidate_notes"][0]["path"].startswith("Projects/hermes-config/")
+    assert packet["context_candidates"]
+    assert packet["context_candidates"][0]["path"].startswith("Projects/hermes-config/")
     assert packet["suggested_note_path"].startswith("Projects/hermes-config/")
 
     checklist = core.finish_checklist("script", findings="workflow mcp rewrite", repo=absolute_repo)
@@ -243,8 +243,8 @@ def test_read_only_review_and_investigation_delegate():
         packet = core.start_task(prompt)
         assert packet["bucket"] == "research", packet
         assert packet["delegation_should_be_considered"] is True
-        assert packet["delegation"]["read_only_delegation_authorized"] is True
-        assert all("Mutation boundary: read-only" in task["context"] for task in packet["delegation"]["tasks"])
+        assert packet["delegation_hint"]["read_only_delegation_authorized"] is True
+        assert all("Mutation boundary: read-only" in task["context"] for task in packet["delegation_hint"]["tasks"])
 
     debug_packet = core.start_task("debug this failure read-only")
     assert debug_packet["bucket"] == "debug"
@@ -272,7 +272,7 @@ def test_start_task_override_preserves_prompt_derived_risk(tmp_path, monkeypatch
     assert "workflow-light-ops-contract" in packet["required_skills"]
     assert "obsidian" not in packet["required_skills"]
     assert "codex-knowledge" in packet["required_skills"]
-    assert packet["candidate_notes"]
+    assert packet["context_candidates"]
 
 
 def test_start_task_can_return_selected_fields(tmp_path, monkeypatch):
@@ -367,3 +367,18 @@ def test_repo_slug_tokens_do_not_inflate_relevance(tmp_path):
     assert result["candidates"][0]["path"] == "Projects/filipp.vysokov/retry-logic.md"
     certbot = by_path.get("Projects/filipp.vysokov/certbot-renewal.md")
     assert certbot is None or certbot["match_class"] != "must_read"
+
+
+def test_start_task_packet_has_no_duplicate_aliases():
+    packet = core.start_task("execute workflow MCP oracle implementation", repo="hermes-config")
+    assert "candidate_notes" not in packet
+    assert "delegation" not in packet
+    assert packet["context_candidates"] is not None
+    assert packet["delegation_hint"]["should_delegate"] is True
+
+
+def test_start_task_reports_unknown_fields():
+    packet = core.start_task("compare workflow MCP options", fields=["bucket", "guards", "statement"])
+    assert packet["bucket"] == "research"
+    assert packet["unknown_fields"]["requested"] == ["guards", "statement"]
+    assert "visible_statement" in packet["unknown_fields"]["valid"]

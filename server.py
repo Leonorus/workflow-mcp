@@ -69,7 +69,16 @@ def start_task(
     already_classified_bucket: str | None = None,
     fields: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Return bucket, visible statement, required skills, context candidates, delegation hint, and finish checklist."""
+    """Return bucket, visible statement, required skills, context candidates, delegation hint, and finish checklist.
+
+    Optional `fields` limits the response to the requested top-level keys. Valid names:
+    bucket, visible_statement, confidence, ambiguity, why, bucket_decision, first_move,
+    must_not_do_before, risk_axes, required_evidence, success_criteria, required_skills,
+    obsidian_required, reasoning_guard_required, reasoning_guard,
+    delegation_should_be_considered, delegation_hint, context_candidates, context_warnings,
+    contract, finish_checklist, finish_requirements, suggested_note_path.
+    Unknown names are reported back under `unknown_fields`.
+    """
 
     args = {
         "prompt": prompt,
