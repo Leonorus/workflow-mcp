@@ -203,6 +203,7 @@ _MUTATION_WORDS = (
 
 _DESTRUCTIVE_WORDS = ("apply", "delete", "destroy", "remove", "force", "reset", "drop", "wipe", "terminate")
 _ARCHITECTURE_WORDS = ("architecture", "design", "migration", "migrate", "tradeoff", "tradeoffs", "scaling", "performance")
+_ANALYSIS_INTENT_WORDS = ("analyze", "analyse", "assess", "audit", "evaluate")
 
 _CONTEXT_GENERIC_TERMS = {
     "ask", "bucket", "case", "cases", "check", "checklist", "concrete", "context", "current", "exact",
@@ -315,6 +316,15 @@ def classify_task(prompt: str, cwd: str | None = None, repo: str | None = None) 
         r"\b(add|build|change|configure|create|edit|execute|fix|install|modify|patch|remove|rename|setup|update|wire|write)\b|set up",
         text,
     ) is not None
+    # Analysis verbs without mutation verbs mean the subject (MCP, launchd, ...)
+    # is what gets studied, not what gets built; intent outranks subject domain.
+    # A leading analysis verb is imperative intent even when mutation-looking
+    # nouns ("setup", "update") appear later in the sentence.
+    leading_analysis = re.match(r"\s*(?:please\s+)?(?:analyze|analyse|assess|audit|evaluate)\b", text) is not None
+    analysis_intent = leading_analysis or (_contains(text, _ANALYSIS_INTENT_WORDS) and not mutation)
+    if analysis_intent:
+        scores["research"] += 8
+        reasons["research"].append("analysis/assessment intent without mutation verbs")
 
     for bucket, needles in _KEYWORDS.items():
         hits = _count_contains(text, needles)
@@ -325,10 +335,10 @@ def classify_task(prompt: str, cwd: str | None = None, repo: str | None = None) 
     if "execute plan" in text or ("plan" in text and mutation):
         scores["script"] += 3
         reasons["script"].append("plan execution usually needs script-style implementation discipline")
-    if "workflow mcp" in text or ("mcp" in text and "workflow" in text):
+    if ("workflow mcp" in text or ("mcp" in text and "workflow" in text)) and not analysis_intent:
         scores["script"] += 5
         reasons["script"].append("Workflow MCP service work is standalone automation")
-    if "launchagent" in text or "launchd" in text or "plist" in text:
+    if ("launchagent" in text or "launchd" in text or "plist" in text) and not analysis_intent:
         scores["script"] += 4
         reasons["script"].append("launchd service wrapper or plist work")
     if "readme" in text and "typo" in text:

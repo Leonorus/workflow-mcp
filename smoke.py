@@ -16,6 +16,7 @@ CASES = [
     ("debug", lambda: classify_task("check")),
     ("debug", lambda: classify_task("fix failing test in workflow server")),
     ("research", lambda: classify_task("compare workflow MCP implementation options")),
+    ("research", lambda: classify_task("analyze the workflow MCP server and propose improvements")),
     ("trivia", lambda: classify_task("update typo in README")),
     ("script", lambda: classify_task("add launchd service for workflow MCP")),
     ("repo_maintenance", lambda: classify_task("dependency bump and CI cleanup")),

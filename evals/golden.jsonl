@@ -9,3 +9,6 @@
 {"case_id":"repo-maintenance-deps-ci","prompt":"dependency bump and CI cleanup","bucket_primary":"repo_maintenance","bucket_acceptable":["repo_maintenance"],"reasoning_guard_required":false}
 {"case_id":"app-code-api-test","prompt":"add API endpoint with unit tests","bucket_primary":"app_code","bucket_acceptable":["app_code"],"reasoning_guard_required":false}
 {"case_id":"heavy-rollback-migration","prompt":"plan production database migration with rollback path","bucket_primary":"heavy_ops","bucket_acceptable":["heavy_ops"],"reasoning_guard_required":true}
+{"case_id": "analyze-mcp-service-is-research", "prompt": "analyze our workflow mcp server. how can we make it better?", "bucket_primary": "research", "bucket_acceptable": ["research"]}
+{"case_id": "audit-launchd-is-research", "prompt": "audit the launchd scheduled tasks and report risks", "bucket_primary": "research", "bucket_acceptable": ["research"]}
+{"case_id": "assess-hooks-is-research", "prompt": "assess the claude hooks setup and propose improvements", "bucket_primary": "research", "bucket_acceptable": ["research"]}
