@@ -763,12 +763,42 @@ def _finish_requirements(bucket: str, finish: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _apply_caller_bucket(classification: dict[str, Any], bucket: str, prompt: str, why_reason: str) -> str:
+    """Redirect a classification to a caller/memory-supplied bucket.
+
+    Escalation flags and prompt-derived obsidian/reasoning-guard requirements
+    are preserved so a supplied bucket can never downgrade safety.
+    """
+
+    original_bucket = classification["bucket"]
+    prompt_obsidian_required = bool(classification.get("obsidian_required"))
+    prompt_reasoning_guard_required = bool(classification.get("reasoning_guard_required"))
+    classification["bucket"] = bucket
+    classification["visible_statement"] = _visible_statement(bucket, [why_reason])
+    classification["why"] = [why_reason]
+    classification["obsidian_required"] = bool(
+        prompt_obsidian_required
+        or BUCKET_CONTRACTS[bucket]["obsidian_required"]
+        or bucket in {"debug", "heavy_ops"}
+    )
+    classification["reasoning_guard_required"] = bool(
+        prompt_reasoning_guard_required
+        or bucket in {"debug", "heavy_ops"}
+        or (bucket == "script" and _contains(prompt.lower(), ("launchagent", "launchd", "mcp", "service", "hook")))
+    )
+    classification["ambiguity"] = bool(classification.get("ambiguity") or original_bucket != bucket)
+    return original_bucket
+
+
 def start_task(
     prompt: str,
     cwd: str | None = None,
     repo: str | None = None,
     already_classified_bucket: str | None = None,
     fields: list[str] | None = None,
+    memory_bucket: str | None = None,
+    memory_meta: dict[str, Any] | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     if already_classified_bucket:
         try:
@@ -776,27 +806,26 @@ def start_task(
         except ValueError:
             return _bucket_error(already_classified_bucket)
         classification = classify_task(prompt, cwd=cwd, repo=repo)
-        original_bucket = classification["bucket"]
-        prompt_obsidian_required = bool(classification.get("obsidian_required"))
-        prompt_reasoning_guard_required = bool(classification.get("reasoning_guard_required"))
-        classification["bucket"] = bucket
-        classification["visible_statement"] = _visible_statement(bucket, [f"caller supplied {BUCKET_DISPLAY[bucket]} classification"])
-        classification["why"] = [f"caller supplied {BUCKET_DISPLAY[bucket]} classification"]
-        classification["obsidian_required"] = bool(
-            prompt_obsidian_required
-            or BUCKET_CONTRACTS[bucket]["obsidian_required"]
-            or bucket in {"debug", "heavy_ops"}
-        )
-        classification["reasoning_guard_required"] = bool(
-            prompt_reasoning_guard_required
-            or bucket in {"debug", "heavy_ops"}
-            or (bucket == "script" and _contains(prompt.lower(), ("launchagent", "launchd", "mcp", "service", "hook")))
+        original_bucket = _apply_caller_bucket(
+            classification, bucket, prompt, f"caller supplied {BUCKET_DISPLAY[bucket]} classification"
         )
         classification["override"] = {"from": original_bucket, "to": bucket}
-        classification["ambiguity"] = bool(classification.get("ambiguity") or original_bucket != bucket)
     else:
         classification = classify_task(prompt, cwd=cwd, repo=repo)
         bucket = classification["bucket"]
+        if memory_bucket:
+            try:
+                validated = _validate_bucket(memory_bucket)
+            except ValueError:
+                validated = None  # memory must never break a call; fall back to classifier
+            if validated and validated != bucket:
+                meta = memory_meta or {}
+                corrected_ts = meta.get("corrected_ts")
+                corrected_date = corrected_ts[:10] if isinstance(corrected_ts, str) else "earlier"
+                reason = f"memory match from prior override (corrected {corrected_date}, seen {meta.get('count') or 1}x)"
+                original_bucket = _apply_caller_bucket(classification, validated, prompt, reason)
+                classification["memory"] = {"from": original_bucket, "to": validated, **meta}
+                bucket = validated
 
     repo_name = _repo_name(repo, cwd)
     need_fields = set(fields) if fields is not None else None
@@ -843,6 +872,10 @@ def start_task(
     }
     if "override" in classification:
         packet["override"] = classification["override"]
+    if "memory" in classification:
+        packet["memory"] = classification["memory"]
+    if task_id:
+        packet["task_id"] = task_id
     if fields is not None:
         requested = [field for field in fields if field in packet]
         unknown = [field for field in fields if field not in packet]

@@ -65,3 +65,24 @@ def test_record_call_logs_override(tmp_path, monkeypatch):
     event = json.loads((tmp_path / "calls.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     assert event["override_from"] == "script"
     assert event["override_to"] == "research"
+
+
+def test_record_call_logs_memory_and_correlation_without_prompt(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(metrics, "CALLS_PATH", tmp_path / "calls.jsonl")
+
+    prompt = "secret raw prompt text"
+    result = {
+        "bucket": "research",
+        "memory": {"from": "script", "to": "research", "count": 2},
+        "task_id": "abc123def456",
+        "correlation": "task_id",
+    }
+    metrics.record_call("start_task", time.perf_counter(), True, args={"prompt": prompt}, result=result)
+
+    event = json.loads((tmp_path / "calls.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert event["memory_from"] == "script"
+    assert event["memory_to"] == "research"
+    assert event["task_id"] == "abc123def456"
+    assert event["correlation"] == "task_id"
+    assert prompt not in json.dumps(event)

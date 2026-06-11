@@ -99,7 +99,7 @@ def _result_summary(result: Any) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {}
     out: dict[str, Any] = {}
-    for key in ("bucket", "confidence", "ambiguity", "obsidian_required", "reasoning_guard_required", "should_delegate"):
+    for key in ("bucket", "confidence", "ambiguity", "obsidian_required", "reasoning_guard_required", "should_delegate", "task_id", "correlation"):
         if key in result:
             out[key] = result[key]
     if "candidates" in result and isinstance(result["candidates"], list):
@@ -115,6 +115,9 @@ def _result_summary(result: Any) -> dict[str, Any]:
     if isinstance(result.get("override"), dict):
         out["override_from"] = result["override"].get("from")
         out["override_to"] = result["override"].get("to")
+    if isinstance(result.get("memory"), dict):
+        out["memory_from"] = result["memory"].get("from")
+        out["memory_to"] = result["memory"].get("to")
     if "delegation_hint" in result and isinstance(result["delegation_hint"], dict):
         tasks = result["delegation_hint"].get("tasks")
         if isinstance(tasks, list):

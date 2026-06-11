@@ -275,6 +275,64 @@ def test_start_task_override_preserves_prompt_derived_risk(tmp_path, monkeypatch
     assert packet["context_candidates"]
 
 
+def test_start_task_memory_bucket_redirects_and_preserves_risk(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    (vault / "Knowledge").mkdir(parents=True)
+    (vault / "Knowledge" / "architecture.md").write_text("architecture tradeoff note", encoding="utf-8")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    packet = core.start_task(
+        "compare architecture tradeoffs for workflow MCP server options",
+        repo="hermes-config",
+        memory_bucket="light_ops",
+        memory_meta={"corrected_ts": "2026-06-10T10:00:00+00:00", "count": 2},
+        task_id="abc123",
+    )
+
+    assert packet["bucket"] == "light_ops"
+    assert packet["memory"]["to"] == "light_ops"
+    assert packet["memory"]["from"] in core.BUCKETS
+    assert "memory match" in packet["visible_statement"]
+    assert "2026-06-10" in packet["visible_statement"]
+    assert packet["obsidian_required"] is True
+    assert packet["reasoning_guard_required"] is True
+    assert packet["task_id"] == "abc123"
+    assert "override" not in packet
+
+
+def test_start_task_invalid_memory_bucket_falls_back_to_classifier(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    (vault / "Projects" / "hermes-config").mkdir(parents=True)
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    packet = core.start_task(
+        "compare workflow MCP options",
+        repo="hermes-config",
+        memory_bucket="not-a-bucket",
+    )
+    assert packet["bucket"] == "research"
+    assert "memory" not in packet
+    assert "error" not in packet
+
+
+def test_start_task_explicit_override_wins_and_memory_fields_selectable(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    (vault / "Projects" / "hermes-config").mkdir(parents=True)
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    packet = core.start_task(
+        "compare workflow MCP options",
+        repo="hermes-config",
+        already_classified_bucket="app_code",
+        fields=["bucket", "task_id", "memory", "override"],
+        task_id="def456",
+    )
+    assert packet["bucket"] == "app_code"
+    assert packet["task_id"] == "def456"
+    assert packet["override"]["to"] == "app_code"
+    assert "memory" in packet.get("unknown_fields", {}).get("requested", []) or "memory" not in packet
+
+
 def test_start_task_can_return_selected_fields(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     (vault / "Projects" / "hermes-config").mkdir(parents=True)

@@ -21,12 +21,12 @@ TASK_DIR = Path(__file__).resolve().parent
 if str(TASK_DIR) not in sys.path:
     sys.path.insert(0, str(TASK_DIR))
 
-from metrics import health_stats, record_call  # noqa: E402
-from workflow_core import (  # noqa: E402
-    discover_context as core_discover_context,
-    finish_checklist as core_finish_checklist,
-    start_task as core_start_task,
+from learning import (  # noqa: E402
+    finish_checklist_with_learning,
+    start_task_with_learning,
 )
+from metrics import health_stats, record_call  # noqa: E402
+from workflow_core import discover_context as core_discover_context  # noqa: E402
 
 HOST = os.environ.get("HERMES_WORKFLOW_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("HERMES_WORKFLOW_MCP_PORT", "8813"))
@@ -75,8 +75,12 @@ def start_task(
     must_not_do_before, risk_axes, required_evidence, success_criteria, required_skills,
     obsidian_required, reasoning_guard_required, reasoning_guard,
     delegation_should_be_considered, delegation_hint, context_candidates, context_warnings,
-    contract, finish_checklist, finish_requirements, suggested_note_path.
+    contract, finish_checklist, finish_requirements, suggested_note_path, task_id, memory.
     Unknown names are reported back under `unknown_fields`.
+
+    The packet includes a `task_id`; pass it to finish_checklist so start/finish
+    bucket disagreement can feed classification learning. A `memory` key means the
+    bucket came from a prior correction of the same prompt (exact-match memory).
     """
 
     args = {
@@ -89,7 +93,7 @@ def start_task(
     return _with_metrics(
         "start_task",
         args,
-        lambda: core_start_task(
+        lambda: start_task_with_learning(
             prompt=prompt,
             cwd=cwd,
             repo=repo,
@@ -154,8 +158,13 @@ def finish_checklist(
     skills_loaded: list[str] | None = None,
     skills_updated: list[str] | None = None,
     verification_intent: str | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
-    """Return verification/docs/note/memory/skill-maintenance finish requirements."""
+    """Return verification/docs/note/memory/skill-maintenance finish requirements.
+
+    Pass the `task_id` from the matching start_task packet so bucket
+    disagreement between start and finish can feed classification learning.
+    """
 
     args = {
         "bucket": bucket,
@@ -172,11 +181,12 @@ def finish_checklist(
         "skills_loaded": skills_loaded,
         "skills_updated": skills_updated,
         "verification_intent": verification_intent,
+        "task_id": task_id,
     }
     return _with_metrics(
         "finish_checklist",
         args,
-        lambda: core_finish_checklist(
+        lambda: finish_checklist_with_learning(
             bucket=bucket,
             changed_files=changed_files,
             commands_run=commands_run,
@@ -191,6 +201,7 @@ def finish_checklist(
             skills_loaded=skills_loaded,
             skills_updated=skills_updated,
             verification_intent=verification_intent,
+            task_id=task_id,
         ),
     )
 
