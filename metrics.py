@@ -143,8 +143,6 @@ def record_call(tool: str, started: float, success: bool, args: dict[str, Any] |
         "service_version": PROCESS_SERVICE_VERSION,
     }
     event.update(_prompt_summary(args.get("prompt")))
-    if args.get("session_id"):
-        event["session_id"] = args.get("session_id")
     if args.get("fields") is not None:
         event["fields_requested"] = args.get("fields")
     if args.get("inline_top_n") is not None:

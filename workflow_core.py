@@ -743,7 +743,6 @@ def start_task(
     prompt: str,
     cwd: str | None = None,
     repo: str | None = None,
-    session_id: str | None = None,
     already_classified_bucket: str | None = None,
     fields: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -816,7 +815,6 @@ def start_task(
         "finish_checklist": finish["checklist"],
         "finish_requirements": _finish_requirements(bucket, finish),
         "suggested_note_path": finish.get("suggested_note_path"),
-        "session_id": session_id,
     }
     if fields is not None:
         requested = [field for field in fields if field in packet]

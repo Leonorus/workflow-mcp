@@ -23,16 +23,14 @@ if str(TASK_DIR) not in sys.path:
 
 from metrics import current_service_version, health_stats, record_call  # noqa: E402
 from workflow_core import (  # noqa: E402
-    classify_task as core_classify_task,
     discover_context as core_discover_context,
     finish_checklist as core_finish_checklist,
     start_task as core_start_task,
-    suggest_delegation as core_suggest_delegation,
 )
 
 HOST = os.environ.get("HERMES_WORKFLOW_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("HERMES_WORKFLOW_MCP_PORT", "8813"))
-TOOL_COUNT = 5
+TOOL_COUNT = 3
 
 mcp = FastMCP(
     "workflow",
@@ -64,19 +62,10 @@ async def health(_: Request) -> JSONResponse:
 
 
 @mcp.tool()
-def classify_task(prompt: str, cwd: str | None = None, repo: str | None = None) -> dict[str, Any]:
-    """Classify a prompt into Filipp's codex-workflow bucket taxonomy."""
-
-    args = {"prompt": prompt, "cwd": cwd, "repo": repo}
-    return _with_metrics("classify_task", args, lambda: core_classify_task(prompt=prompt, cwd=cwd, repo=repo))
-
-
-@mcp.tool()
 def start_task(
     prompt: str,
     cwd: str | None = None,
     repo: str | None = None,
-    session_id: str | None = None,
     already_classified_bucket: str | None = None,
     fields: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -86,7 +75,6 @@ def start_task(
         "prompt": prompt,
         "cwd": cwd,
         "repo": repo,
-        "session_id": session_id,
         "already_classified_bucket": already_classified_bucket,
         "fields": fields,
     }
@@ -97,7 +85,6 @@ def start_task(
             prompt=prompt,
             cwd=cwd,
             repo=repo,
-            session_id=session_id,
             already_classified_bucket=already_classified_bucket,
             fields=fields,
         ),
@@ -141,19 +128,6 @@ def discover_context(
             inline_max_chars=inline_max_chars,
         ),
     )
-
-
-@mcp.tool()
-def suggest_delegation(
-    prompt: str,
-    bucket: str | None = None,
-    cwd: str | None = None,
-    repo: str | None = None,
-) -> dict[str, Any]:
-    """Suggest concrete delegate_task workstreams for substantial buckets."""
-
-    args = {"prompt": prompt, "bucket": bucket, "cwd": cwd, "repo": repo}
-    return _with_metrics("suggest_delegation", args, lambda: core_suggest_delegation(prompt=prompt, bucket=bucket, cwd=cwd, repo=repo))
 
 
 @mcp.tool()
