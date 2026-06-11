@@ -65,8 +65,9 @@ def test_task_style_check_routes_to_debug_without_checklist_overmatch():
     packet = core.start_task("check", repo="hermes-config")
     assert packet["bucket"] == "debug"
     assert "workflow-debug-contract" in packet["required_skills"]
-    assert "systematic-debugging" in packet["required_skills"]
-    assert "obsidian" in packet["required_skills"]
+    assert "systematic-debugging" not in packet["required_skills"]
+    assert "obsidian" not in packet["required_skills"]
+    assert "codex-knowledge" in packet["required_skills"]
     assert packet["reasoning_guard"]["required"] is True
 
 
@@ -80,6 +81,8 @@ def test_start_task_packet_for_non_trivia_and_trivia(tmp_path, monkeypatch):
     assert packet["bucket"] == "script"
     assert "codex-workflow" in packet["required_skills"]
     assert "workflow-script-contract" in packet["required_skills"]
+    assert "hermes-agent" not in packet["required_skills"]
+    assert "native-mcp" not in packet["required_skills"]
     assert packet["delegation_should_be_considered"] is True
     assert packet["first_move"]
     assert packet["must_not_do_before"]
@@ -265,7 +268,8 @@ def test_start_task_override_preserves_prompt_derived_risk(tmp_path, monkeypatch
     assert packet["obsidian_required"] is True
     assert packet["reasoning_guard_required"] is True
     assert "workflow-light-ops-contract" in packet["required_skills"]
-    assert "obsidian" in packet["required_skills"]
+    assert "obsidian" not in packet["required_skills"]
+    assert "codex-knowledge" in packet["required_skills"]
     assert packet["candidate_notes"]
 
 
@@ -307,7 +311,7 @@ def test_finish_checklist_can_detect_git_changes(tmp_path):
     assert "config.yaml" in result["changed_files_detected"]
     assert result["changed_files_source"] == "git"
     assert "zsh -n" in joined
-    assert "hermes config check" in joined
+    assert "codex mcp list" in joined
 
 
 def test_finish_checklist_rules():
@@ -321,16 +325,16 @@ def test_finish_checklist_rules():
     assert debug["note_action"] == "write_raw_note"
     joined = "\n".join(debug["checklist"])
     assert "plutil" in joined
-    assert "hermes config check" in joined
+    assert "codex mcp list" in joined
     assert debug["unsafe_to_finalize"] is True
     assert debug["missing_notes"]
     complete = core.finish_checklist(
         "script",
         changed_files=["scheduled-tasks/workflow-mcp/server.py", "scheduled-tasks/workflow-mcp/com.filipp.hermes-workflow-mcp.plist"],
-        commands_run=["pytest", "py_compile", "smoke.py", "plutil -lint", "launchctl print", "validate_surfaces"],
+        commands_run=["pytest", "py_compile", "smoke.py", "plutil -lint", "launchctl print", "cmp -s live mirror"],
         findings="workflow mcp complete",
         repo="hermes-config",
-        skills_updated=["hermes-agent"],
+        skills_updated=["codex-workflow"],
     )
     assert complete["unsafe_to_finalize"] is False
     assert complete["required_checks"]
@@ -338,50 +342,3 @@ def test_finish_checklist_rules():
     research = core.finish_checklist("research", findings="workflow mcp options", repo="hermes-config")
     assert research["note_action"] == "ask_user"
     assert research["suggested_note_path"].startswith("Projects/hermes-config/")
-
-
-def test_validate_surfaces_reports_drift_without_writes(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    repo = home / "src" / "hermes-config"
-    live = home / ".hermes" / "scheduled-tasks" / "workflow-mcp"
-    mirror = repo / "scheduled-tasks" / "workflow-mcp"
-    for root in (live, mirror, repo / "skills" / "codex-workflow", repo / "hooks", home / ".hermes" / "skills" / "codex-workflow", home / ".hermes" / "hooks", home / ".codex" / "hooks", home / ".codex" / "skills" / "codex-workflow", home / "Library" / "LaunchAgents"):
-        root.mkdir(parents=True, exist_ok=True)
-    for name in ["workflow_core.py", "server.py", "metrics.py", "run.sh", "com.filipp.hermes-workflow-mcp.plist"]:
-        (live / name).write_text("same", encoding="utf-8")
-        (mirror / name).write_text("same", encoding="utf-8")
-    plist = """<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>Label</key><string>com.filipp.hermes-workflow-mcp</string></dict></plist>"""
-    (live / "com.filipp.hermes-workflow-mcp.plist").write_text(plist, encoding="utf-8")
-    (mirror / "com.filipp.hermes-workflow-mcp.plist").write_text(plist, encoding="utf-8")
-    (home / "Library" / "LaunchAgents" / "com.filipp.hermes-workflow-mcp.plist").write_text(plist, encoding="utf-8")
-    (home / ".hermes" / "skills" / "codex-workflow" / "SKILL.md").write_text("skill", encoding="utf-8")
-    (repo / "skills" / "codex-workflow" / "SKILL.md").write_text("different", encoding="utf-8")
-    for hook in ["classify-task-reminder.py", "obsidian-index.py"]:
-        (home / ".hermes" / "hooks" / hook).write_text("hook", encoding="utf-8")
-        (repo / "hooks" / hook).write_text("hook", encoding="utf-8")
-    (home / ".hermes" / "config.yaml").parent.mkdir(parents=True, exist_ok=True)
-    (home / ".hermes" / "config.yaml").write_text("mcp_servers:\n  workflow:\n    url: http://127.0.0.1:8813/mcp\n", encoding="utf-8")
-    (home / ".codex" / "config.toml").write_text('[mcp_servers.workflow]\nurl = "http://127.0.0.1:8813/mcp"\n', encoding="utf-8")
-    (home / ".codex" / "hooks.json").write_text("{}", encoding="utf-8")
-    for hook in ["classify-task-reminder.sh", "obsidian-index.sh"]:
-        (home / ".codex" / "hooks" / hook).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    aligned_codex_policy = "mcp_workflow_start_task mcp_workflow_finish_checklist Workflow/Obsidian MCP before Obsidian claims Candidate paths are routing metadata"
-    (home / ".codex" / "skills" / "codex-workflow" / "SKILL.md").write_text(aligned_codex_policy, encoding="utf-8")
-    for skill_name in core.BUCKET_SKILL_NAMES.values():
-        source = repo / "skills" / "workflow-contracts" / skill_name
-        hermes = home / ".hermes" / "skills" / "workflow-contracts" / skill_name
-        codex = home / ".codex" / "skills" / skill_name
-        for root in (source, hermes, codex):
-            root.mkdir(parents=True, exist_ok=True)
-            (root / "SKILL.md").write_text(skill_name, encoding="utf-8")
-    monkeypatch.setattr(core.Path, "home", lambda: home)
-
-    result = core.validate_surfaces(repo_root=str(repo), live_root=str(live), mirror_root=str(mirror), health_url="http://127.0.0.1:1/health")
-    assert result["status"] in {"warn", "error"}
-    assert any(item["surface"] == "codex_workflow_skill" for item in result["drift"])
-    by_name = {item["name"]: item for item in result["checks"]}
-    assert by_name["codex_config_workflow_mcp"]["status"] == "ok"
-    assert by_name["codex_hooks_json"]["status"] == "ok"
-    assert by_name["codex_workflow_skill_codex"]["status"] == "ok"
-    assert by_name["codex_workflow-debug-contract"]["status"] == "ok"
-    assert result["suggested_fix_plan"]

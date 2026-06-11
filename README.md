@@ -1,8 +1,8 @@
 # Workflow MCP Oracle
 
-Read-only local MCP service that turns Filipp's `codex-workflow` policy into structured workflow helpers for Hermes.
+Read-only local MCP service that turns Filipp's `codex-workflow` policy into structured workflow helpers for Codex.
 
-The canonical policy remains the `codex-workflow` skill. This service only operationalizes stable policy data: bucket classification, bucket contracts, direct Obsidian context candidates, delegation suggestions, and finish checklists. V1 deliberately performs no writes to Obsidian, Hermes config, git, or launchd.
+The canonical policy remains the `codex-workflow` skill. This service only operationalizes stable policy data: bucket classification, bucket contracts, direct Obsidian context candidates, delegation suggestions, and finish checklists. V1 deliberately performs no writes to Obsidian, Codex config, git, or launchd.
 
 ## Endpoint and launchd
 
@@ -14,28 +14,25 @@ The canonical policy remains the `codex-workflow` skill. This service only opera
 - Logs: `~/.hermes/scheduled-tasks/workflow-mcp/logs/`
 - Python: `~/.hermes/hermes-agent/venv/bin/python` because system Python does not include the MCP SDK.
 
-Hermes config shape:
+Codex config shape:
 
-```yaml
-mcp_servers:
-  workflow:
-    url: http://127.0.0.1:8813/mcp
-    connect_timeout: 30
-    timeout: 60
+```toml
+[mcp_servers.workflow]
+url = "http://127.0.0.1:8813/mcp"
 ```
 
-Fresh Hermes sessions need `/reload-mcp` or restart to see newly registered tools.
+Fresh Codex sessions may need restart to see newly registered MCP tools.
 
 ## MCP tools
 
 V1.5 exposes six MCP tools over nine workflow buckets (`trivia`, `light_ops`, `heavy_ops`, `app_code`, `script`, `debug`, `research`, `repo_maintenance`, `ambiguous`):
 
-- `start_task` — full start packet: bucket, visible statement, skills, Obsidian requirement, context candidates, delegation hint, contract, finish checklist, `first_move`, `must_not_do_before`, `risk_axes`, `required_evidence`, `bucket_decision`, `reasoning_guard`, and `finish_requirements`. Optional `fields` returns only requested top-level fields to reduce token use and avoid unused expensive sections.
+- `start_task` — full start packet: bucket, visible statement, Codex skill names, Obsidian requirement, context candidates, delegation hint, contract, finish checklist, `first_move`, `must_not_do_before`, `risk_axes`, `required_evidence`, `bucket_decision`, `reasoning_guard`, and `finish_requirements`. Optional `fields` returns only requested top-level fields to reduce token use and avoid unused expensive sections.
 - `classify_task` — small classification result with confidence, ambiguity, why, and escalation flags.
 - `discover_context` — direct-keyword Obsidian candidates from `Projects/<repo>/`, `Knowledge/`, and `Organization/`; accepts either a repo slug or absolute checkout path and returns paths/reasons/snippets only when requested. Optional `inline_top_n` and `inline_max_chars` inline the top candidates' note bodies to avoid duplicate reads.
 - `suggest_delegation` — prompt-aware `delegate_task` workstreams with valid `task_bucket` enum names plus extracted paths/tickets/error text when available.
 - `finish_checklist` — verification/docs/note/memory/skill-maintenance checklist from bucket and changed files. Optional `repo_root` + `auto_detect_changes` asks git for changed/untracked paths instead of trusting caller-supplied `changed_files`. Phase 2 fields include required checks, missing verification/docs/notes/skill actions, `unsafe_to_finalize`, subagent/side-effect review reminders, and final-response requirements.
-- `validate_surfaces` — read-only drift checks for live/mirror Workflow MCP files, `codex-workflow` skill copies, workflow hooks, source/installed LaunchAgent plist, Hermes MCP config, and health/version metadata.
+- `validate_surfaces` — read-only drift checks for live/mirror Workflow MCP files, Codex workflow skills, workflow hooks, source/installed LaunchAgent plist, Codex MCP config, and health/version metadata.
 
 ## Telemetry
 
@@ -101,9 +98,8 @@ plutil -lint ~/Library/LaunchAgents/com.filipp.hermes-workflow-mcp.plist
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.filipp.hermes-workflow-mcp.plist
 launchctl print "gui/$(id -u)/com.filipp.hermes-workflow-mcp" | sed -n '1,120p'
 curl -fsS http://127.0.0.1:8813/health
-hermes config check
-hermes mcp list
-hermes mcp test workflow
+codex mcp list
+codex mcp get workflow
 ```
 
 If iterating on an already-loaded label:
@@ -118,8 +114,8 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.filipp.hermes-work
 ```bash
 launchctl bootout "gui/$(id -u)/com.filipp.hermes-workflow-mcp" || true
 rm -f ~/Library/LaunchAgents/com.filipp.hermes-workflow-mcp.plist
-# Remove or disable mcp_servers.workflow from ~/.hermes/config.yaml if needed.
-hermes config check
+# Remove or disable mcp_servers.workflow from ~/.codex/config.toml if needed.
+codex mcp list
 ```
 
 If hooks are later modified to call this service, keep their fallback static and verify they still emit valid `{"context": "..."}` JSON when this service is down.

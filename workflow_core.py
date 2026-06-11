@@ -9,13 +9,9 @@ start/finish rules into structured data for a tiny local MCP server.
 from __future__ import annotations
 
 import datetime as _dt
-import json
 import os
-import plistlib
 import re
 import subprocess
-import tomllib
-import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -206,7 +202,6 @@ _MUTATION_WORDS = (
 
 _DESTRUCTIVE_WORDS = ("apply", "delete", "destroy", "remove", "force", "reset", "drop", "wipe", "terminate")
 _ARCHITECTURE_WORDS = ("architecture", "design", "migration", "migrate", "tradeoff", "tradeoffs", "scaling", "performance")
-_HERMES_MCP_WORDS = ("hermes", "mcp", "workflow", "codex-workflow", "launchagent", "scheduled-task", "scheduled task")
 
 _CONTEXT_GENERIC_TERMS = {
     "ask", "bucket", "case", "cases", "check", "checklist", "concrete", "context", "current", "exact",
@@ -319,7 +314,7 @@ def classify_task(prompt: str, cwd: str | None = None, repo: str | None = None) 
         reasons["script"].append("plan execution usually needs script-style implementation discipline")
     if "workflow mcp" in text or ("mcp" in text and "workflow" in text):
         scores["script"] += 5
-        reasons["script"].append("Hermes Workflow MCP service work is standalone automation")
+        reasons["script"].append("Workflow MCP service work is standalone automation")
     if "launchagent" in text or "launchd" in text or "plist" in text:
         scores["script"] += 4
         reasons["script"].append("launchd service wrapper or plist work")
@@ -666,14 +661,10 @@ def required_skills_for(
     if bucket not in {"trivia"}:
         skills.append("codex-workflow")
     skills.append(BUCKET_SKILL_NAMES[bucket])
-    if _contains(text, _HERMES_MCP_WORDS):
-        skills.extend(["hermes-agent", "native-mcp"])
     if obsidian_required is None:
         obsidian_required = bool("obsidian" in text or BUCKET_CONTRACTS[bucket]["obsidian_required"] or "architecture" in text)
     if obsidian_required:
-        skills.append("obsidian")
-    if bucket == "debug":
-        skills.append("systematic-debugging")
+        skills.append("codex-knowledge")
     # A reasoning guard is an output contract rather than a separate tool, but keep
     # codex-workflow present when the selected bucket is otherwise trivial/ambiguous
     # and the prompt-derived risk still requires evidence-gated reasoning.
@@ -989,11 +980,10 @@ def _required_checks_for_files(changed_files: list[str]) -> list[dict[str, str]]
         add("plist_lint", "plutil -lint on source and installed plists", "LaunchAgent plist changed")
         add("launchctl_print", "launchctl print for loaded labels", "LaunchAgent schedule/runtime changed")
     if any("config.yaml" in path or "mcp_servers" in path for path in changed_files):
-        add("hermes_config", "hermes config check", "Hermes config changed")
-        add("mcp_test", "hermes mcp test for changed MCP servers", "MCP config changed")
+        add("codex_config", "codex mcp list and codex mcp get for changed MCP servers", "Codex MCP config changed")
     if any("workflow-mcp" in path for path in changed_files):
         add("workflow_smoke", "workflow-mcp smoke.py and direct MCP smoke", "Workflow MCP changed")
-        add("surface_validation", "validate_surfaces or live/mirror comparisons", "Workflow surfaces changed")
+        add("surface_validation", "cmp/diff live ~/.hermes/scheduled-tasks/workflow-mcp vs repo mirror", "Workflow surfaces changed")
     if any("README" in path or "AGENTS.md" in path or "/docs/" in path for path in changed_files):
         add("docs_review", "review docs commands and paths", "Documentation changed")
     return checks
@@ -1006,10 +996,9 @@ def _command_covers_check(command: str, check_key: str) -> bool:
         "shell_syntax": ("zsh -n", "sh -n"),
         "plist_lint": ("plutil -lint",),
         "launchctl_print": ("launchctl print",),
-        "hermes_config": ("hermes config check",),
-        "mcp_test": ("hermes mcp test",),
+        "codex_config": ("codex mcp list", "codex mcp get"),
         "workflow_smoke": ("smoke.py", "call_tool('start_task'", 'call_tool("start_task"'),
-        "surface_validation": ("validate_surfaces", "cmp -s", "diff --check"),
+        "surface_validation": ("cmp -s", "diff --check", "rsync -n", "rsync --dry-run"),
         "docs_review": ("readme", "docs", "documentation"),
     }
     return any(token in c for token in matchers.get(check_key, (check_key,)))
@@ -1064,7 +1053,7 @@ def finish_checklist(
     if any("AGENTS.md" in path or "README" in path or "docs" in path for path in changed_files):
         checklist.append("Verify documentation references, commands, and paths still match reality.")
     if any("config.yaml" in path or "mcp_servers" in path for path in changed_files):
-        checklist.extend(["Run hermes config check.", "Run hermes mcp list and hermes mcp test for any changed MCP server."])
+        checklist.append("Run codex mcp list and codex mcp get for any changed MCP server.")
     if any("scheduled-tasks" in path or path.endswith(".plist") or "LaunchAgents" in path for path in changed_files):
         checklist.extend([
             "Run zsh -n on edited run.sh files.",
@@ -1108,7 +1097,7 @@ def finish_checklist(
         missing_notes.append("Raw project note required for this bucket/findings and none were reported.")
     missing_skill_or_memory_action: list[str] = []
     if workflow_surface_paths and not skills_updated:
-        missing_skill_or_memory_action.append("Workflow surface changed; confirm codex-workflow/hermes-agent skill references are still current or update them.")
+        missing_skill_or_memory_action.append("Workflow surface changed; confirm codex-workflow/codex-knowledge skill references are still current or update them.")
     external_side_effects_review = [
         f"Verify side effect outcome and rollback/undo path: {item}" for item in (external_side_effects or [])
     ]
@@ -1148,189 +1137,6 @@ def finish_checklist(
     }
 
 
-def _read_text_safe(path: Path) -> tuple[str | None, str | None]:
-    try:
-        return path.read_text(encoding="utf-8", errors="replace"), None
-    except OSError as exc:
-        return None, str(exc)
-
-
-def _surface_check(name: str, status: str, detail: str, path: str | None = None) -> dict[str, str]:
-    item = {"name": name, "status": status, "detail": detail}
-    if path:
-        item["path"] = path
-    return item
-
-
-def validate_surfaces(
-    repo_root: str | None = None,
-    live_root: str | None = None,
-    mirror_root: str | None = None,
-    health_url: str = "http://127.0.0.1:8813/health",
-    health_payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Read-only drift checks for Workflow MCP, workflow skills, hooks, plist, config, and health."""
-
-    home = Path.home()
-    repo_path = Path(repo_root).expanduser() if repo_root else home / "src/hermes-config"
-    live_task = Path(live_root).expanduser() if live_root else home / ".hermes/scheduled-tasks/workflow-mcp"
-    mirror_task = Path(mirror_root).expanduser() if mirror_root else repo_path / "scheduled-tasks/workflow-mcp"
-    checks: list[dict[str, str]] = []
-    drift: list[dict[str, str]] = []
-    suggested_fix_plan: list[str] = []
-
-    for label, path in (("live_task", live_task), ("mirror_task", mirror_task), ("repo_root", repo_path)):
-        checks.append(_surface_check(label, "ok" if path.exists() else "error", "exists" if path.exists() else "missing", str(path)))
-
-    compare_pairs = [
-        ("workflow_core", live_task / "workflow_core.py", mirror_task / "workflow_core.py"),
-        ("server", live_task / "server.py", mirror_task / "server.py"),
-        ("metrics", live_task / "metrics.py", mirror_task / "metrics.py"),
-        ("run_sh", live_task / "run.sh", mirror_task / "run.sh"),
-        ("workflow_plist", live_task / "com.filipp.hermes-workflow-mcp.plist", mirror_task / "com.filipp.hermes-workflow-mcp.plist"),
-        ("codex_workflow_skill", home / ".hermes/skills/codex-workflow/SKILL.md", repo_path / "skills/codex-workflow/SKILL.md"),
-        ("classify_hook", home / ".hermes/hooks/classify-task-reminder.py", repo_path / "hooks/classify-task-reminder.py"),
-        ("obsidian_hook", home / ".hermes/hooks/obsidian-index.py", repo_path / "hooks/obsidian-index.py"),
-    ]
-    for name, left, right in compare_pairs:
-        if not left.exists() or not right.exists():
-            checks.append(_surface_check(name, "warn", f"cannot compare missing file(s): {left.exists()} {right.exists()}"))
-            continue
-        same = left.read_bytes() == right.read_bytes()
-        checks.append(_surface_check(name, "ok" if same else "warn", "live and mirror match" if same else "live/mirror drift"))
-        if not same:
-            drift.append({"surface": name, "live": str(left), "mirror": str(right), "kind": "content_mismatch"})
-
-    installed_plist = home / "Library/LaunchAgents/com.filipp.hermes-workflow-mcp.plist"
-    source_plist = live_task / "com.filipp.hermes-workflow-mcp.plist"
-    if installed_plist.exists() and source_plist.exists():
-        same = installed_plist.read_bytes() == source_plist.read_bytes()
-        checks.append(_surface_check("installed_workflow_plist", "ok" if same else "warn", "installed plist matches live source" if same else "installed plist drift", str(installed_plist)))
-        if not same:
-            drift.append({"surface": "installed_workflow_plist", "live": str(source_plist), "installed": str(installed_plist), "kind": "content_mismatch"})
-        try:
-            data = plistlib.loads(installed_plist.read_bytes())
-            label = data.get("Label")
-            checks.append(_surface_check("installed_workflow_plist_label", "ok" if label == "com.filipp.hermes-workflow-mcp" else "error", f"label={label}", str(installed_plist)))
-        except Exception as exc:
-            checks.append(_surface_check("installed_workflow_plist_parse", "error", str(exc), str(installed_plist)))
-    else:
-        checks.append(_surface_check("installed_workflow_plist", "warn", "source or installed plist missing", str(installed_plist)))
-
-    config_path = home / ".hermes/config.yaml"
-    config_text, config_err = _read_text_safe(config_path)
-    if config_text is None:
-        checks.append(_surface_check("hermes_config", "error", config_err or "unreadable", str(config_path)))
-    else:
-        has_workflow = "workflow:" in config_text and "127.0.0.1:8813/mcp" in config_text
-        checks.append(_surface_check("hermes_config_workflow_mcp", "ok" if has_workflow else "error", "workflow MCP configured" if has_workflow else "workflow MCP config missing", str(config_path)))
-
-    # Codex readiness: hooks can remind Codex to use Workflow MCP, but the
-    # runtime also needs MCP wiring and local split skills available.
-    codex_root = home / ".codex"
-    codex_config_path = codex_root / "config.toml"
-    codex_config_text, codex_config_err = _read_text_safe(codex_config_path)
-    if codex_config_text is None:
-        checks.append(_surface_check("codex_config", "warn", codex_config_err or "unreadable", str(codex_config_path)))
-    else:
-        try:
-            codex_config_data = tomllib.loads(codex_config_text)
-            workflow_cfg = (codex_config_data.get("mcp_servers") or {}).get("workflow") or {}
-            workflow_url = str(workflow_cfg.get("url", ""))
-            has_codex_workflow = workflow_url == "http://127.0.0.1:8813/mcp"
-            detail = f"workflow url={workflow_url or '<missing>'}"
-        except Exception as exc:
-            has_codex_workflow = False
-            detail = f"config parse failed: {exc}"
-        checks.append(_surface_check("codex_config_workflow_mcp", "ok" if has_codex_workflow else "error", detail, str(codex_config_path)))
-
-    codex_hooks_json = codex_root / "hooks.json"
-    codex_hooks_text, codex_hooks_err = _read_text_safe(codex_hooks_json)
-    if codex_hooks_text is None:
-        checks.append(_surface_check("codex_hooks_json", "warn", codex_hooks_err or "unreadable", str(codex_hooks_json)))
-    else:
-        try:
-            json.loads(codex_hooks_text)
-            checks.append(_surface_check("codex_hooks_json", "ok", "valid JSON", str(codex_hooks_json)))
-        except json.JSONDecodeError as exc:
-            checks.append(_surface_check("codex_hooks_json", "error", f"invalid JSON: {exc}", str(codex_hooks_json)))
-
-    for hook_name in ("classify-task-reminder.sh", "obsidian-index.sh"):
-        hook_path = codex_root / "hooks" / hook_name
-        if not hook_path.exists():
-            checks.append(_surface_check(f"codex_{hook_name}", "warn", "missing", str(hook_path)))
-            continue
-        try:
-            proc = subprocess.run(["sh", "-n", str(hook_path)], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
-            ok = proc.returncode == 0
-            detail = "shell syntax ok" if ok else (proc.stderr.strip()[:240] or f"exit {proc.returncode}")
-            checks.append(_surface_check(f"codex_{hook_name}", "ok" if ok else "error", detail, str(hook_path)))
-        except Exception as exc:
-            checks.append(_surface_check(f"codex_{hook_name}", "error", str(exc), str(hook_path)))
-
-    codex_skill = codex_root / "skills/codex-workflow/SKILL.md"
-    source_skill = repo_path / "skills/codex-workflow/SKILL.md"
-    if codex_skill.exists() and source_skill.exists():
-        codex_text = codex_skill.read_text(encoding="utf-8", errors="replace")
-        required_policy_terms = (
-            "mcp_workflow_start_task",
-            "mcp_workflow_finish_checklist",
-            "Workflow/Obsidian MCP before Obsidian claims",
-            "Candidate paths are routing metadata",
-        )
-        aligned = all(term in codex_text for term in required_policy_terms)
-        detail = "Codex codex-workflow contains required Workflow MCP policy terms" if aligned else "Codex codex-workflow missing required Workflow MCP policy terms"
-        checks.append(_surface_check("codex_workflow_skill_codex", "ok" if aligned else "warn", detail, str(codex_skill)))
-        if not aligned:
-            drift.append({"surface": "codex_workflow_skill_codex", "codex": str(codex_skill), "source": str(source_skill), "kind": "policy_alignment_missing"})
-    else:
-        checks.append(_surface_check("codex_workflow_skill_codex", "warn", "Codex or source codex-workflow skill missing", str(codex_skill)))
-
-    source_contract_root = repo_path / "skills/workflow-contracts"
-    hermes_contract_root = home / ".hermes/skills/workflow-contracts"
-    codex_contract_root = codex_root / "skills"
-    for skill_name in BUCKET_SKILL_NAMES.values():
-        source_skill_path = source_contract_root / skill_name / "SKILL.md"
-        hermes_skill_path = hermes_contract_root / skill_name / "SKILL.md"
-        codex_skill_path = codex_contract_root / skill_name / "SKILL.md"
-        for surface, target_path in (("hermes", hermes_skill_path), ("codex", codex_skill_path)):
-            check_name = f"{surface}_{skill_name}"
-            if not source_skill_path.exists() or not target_path.exists():
-                checks.append(_surface_check(check_name, "warn", "source or installed contract skill missing", str(target_path)))
-                continue
-            same = source_skill_path.read_bytes() == target_path.read_bytes()
-            checks.append(_surface_check(check_name, "ok" if same else "warn", "contract skill matches source" if same else "contract skill drift", str(target_path)))
-            if not same:
-                drift.append({"surface": check_name, "source": str(source_skill_path), "installed": str(target_path), "kind": "content_mismatch"})
-
-    try:
-        if health_payload is not None:
-            health = health_payload
-            health_source = "internal"
-        else:
-            with urllib.request.urlopen(health_url, timeout=3) as response:
-                health = json.loads(response.read().decode("utf-8"))
-            health_source = health_url
-        ok = health.get("status") == "ok"
-        checks.append(_surface_check("workflow_health", "ok" if ok else "error", json.dumps(health, sort_keys=True)[:500], health_source))
-        current = health.get("current_source_version") or health.get("service_version")
-        process = health.get("process_service_version")
-        if process and current and process != current:
-            drift.append({"surface": "workflow_health_version", "process_service_version": str(process), "current_source_version": str(current), "kind": "process_stale"})
-    except Exception as exc:
-        checks.append(_surface_check("workflow_health", "error", str(exc), health_url))
-
-    if drift:
-        suggested_fix_plan.extend([
-            "Sync mirror/live Workflow MCP files with rsync excluding logs and pycache.",
-            "Copy changed plists to ~/Library/LaunchAgents and kickstart only affected labels.",
-            "Run tests, py_compile, smoke.py, plutil, hermes config check, and hermes mcp test workflow.",
-        ])
-    statuses = {item["status"] for item in checks}
-    status = "error" if "error" in statuses else "warn" if "warn" in statuses or drift else "ok"
-    return {"status": status, "checks": checks, "drift": drift, "suggested_fix_plan": suggested_fix_plan}
-
-
 __all__ = [
     "BUCKETS",
     "BUCKET_CONTRACTS",
@@ -1342,5 +1148,4 @@ __all__ = [
     "required_skills_for",
     "start_task",
     "suggest_delegation",
-    "validate_surfaces",
 ]

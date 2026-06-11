@@ -112,12 +112,6 @@ def _result_summary(result: Any) -> dict[str, Any]:
         out["checklist_count"] = len(result["checklist"])
     if "tasks" in result and isinstance(result["tasks"], list):
         out["tasks_count"] = len(result["tasks"])
-    if "status" in result:
-        out["status"] = result["status"]
-    if "drift" in result and isinstance(result["drift"], list):
-        out["drift_count"] = len(result["drift"])
-    if "checks" in result and isinstance(result["checks"], list):
-        out["checks_count"] = len(result["checks"])
     if "delegation_hint" in result and isinstance(result["delegation_hint"], dict):
         tasks = result["delegation_hint"].get("tasks")
         if isinstance(tasks, list):

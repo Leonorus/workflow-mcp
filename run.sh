@@ -35,7 +35,7 @@ fi
 
 if [[ ! -x "$PYTHON" ]]; then
   log "Python executable not found or not executable: $PYTHON"
-  log "Install Hermes Agent source/venv or set HERMES_WORKFLOW_MCP_PYTHON"
+  log "Install an MCP-capable Python venv or set HERMES_WORKFLOW_MCP_PYTHON"
   exit 127
 fi
 

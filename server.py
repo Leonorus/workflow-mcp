@@ -28,12 +28,11 @@ from workflow_core import (  # noqa: E402
     finish_checklist as core_finish_checklist,
     start_task as core_start_task,
     suggest_delegation as core_suggest_delegation,
-    validate_surfaces as core_validate_surfaces,
 )
 
 HOST = os.environ.get("HERMES_WORKFLOW_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("HERMES_WORKFLOW_MCP_PORT", "8813"))
-TOOL_COUNT = 6
+TOOL_COUNT = 5
 
 mcp = FastMCP(
     "workflow",
@@ -210,29 +209,6 @@ def finish_checklist(
             skills_loaded=skills_loaded,
             skills_updated=skills_updated,
             verification_intent=verification_intent,
-        ),
-    )
-
-
-@mcp.tool()
-def validate_surfaces(
-    repo_root: str | None = None,
-    live_root: str | None = None,
-    mirror_root: str | None = None,
-    health_url: str = "http://127.0.0.1:8813/health",
-) -> dict[str, Any]:
-    """Read-only drift checks for live/mirror Workflow MCP, hooks, LaunchAgent plist, and Hermes config."""
-
-    args = {"repo_root": repo_root, "live_root": live_root, "mirror_root": mirror_root, "health_url": health_url}
-    return _with_metrics(
-        "validate_surfaces",
-        args,
-        lambda: core_validate_surfaces(
-            repo_root=repo_root,
-            live_root=live_root,
-            mirror_root=mirror_root,
-            health_url=health_url,
-            health_payload={"status": "ok", "service": "workflow-mcp", "tools": TOOL_COUNT, **health_stats()},
         ),
     )
 
