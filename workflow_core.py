@@ -9,6 +9,7 @@ start/finish rules into structured data for a tiny local MCP server.
 from __future__ import annotations
 
 import datetime as _dt
+import difflib
 import os
 import re
 import subprocess
@@ -273,6 +274,18 @@ def _validate_bucket(bucket: str) -> str:
     if normalized not in BUCKETS:
         raise ValueError(f"unknown bucket {bucket!r}; expected one of {', '.join(BUCKETS)}")
     return normalized
+
+
+def _bucket_error(raw: str) -> dict[str, Any]:
+    """Structured caller-input error so agents can self-correct instead of retrying blind."""
+
+    closest = difflib.get_close_matches(raw.strip().lower().replace("-", "_"), BUCKETS, n=1, cutoff=0.4)
+    return {
+        "error": "unknown_bucket",
+        "got": raw,
+        "valid_buckets": list(BUCKETS),
+        "closest": closest[0] if closest else None,
+    }
 
 
 def _visible_statement(bucket: str, why: list[str]) -> str:
@@ -747,7 +760,10 @@ def start_task(
     fields: list[str] | None = None,
 ) -> dict[str, Any]:
     if already_classified_bucket:
-        bucket = _validate_bucket(already_classified_bucket)
+        try:
+            bucket = _validate_bucket(already_classified_bucket)
+        except ValueError:
+            return _bucket_error(already_classified_bucket)
         classification = classify_task(prompt, cwd=cwd, repo=repo)
         original_bucket = classification["bucket"]
         prompt_obsidian_required = bool(classification.get("obsidian_required"))
@@ -1018,7 +1034,10 @@ def finish_checklist(
     skills_updated: list[str] | None = None,
     verification_intent: str | None = None,
 ) -> dict[str, Any]:
-    bucket = _validate_bucket(bucket)
+    try:
+        bucket = _validate_bucket(bucket)
+    except ValueError:
+        return _bucket_error(bucket)
     caller_changed_files = changed_files or []
     detected_files: list[str] = []
     git_warnings: list[str] = []

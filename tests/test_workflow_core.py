@@ -342,3 +342,12 @@ def test_finish_checklist_rules():
     research = core.finish_checklist("research", findings="workflow mcp options", repo="hermes-config")
     assert research["note_action"] == "ask_user"
     assert research["suggested_note_path"].startswith("Projects/hermes-config/")
+
+
+def test_unknown_bucket_returns_structured_error():
+    result = core.finish_checklist("opsy")
+    assert result["error"] == "unknown_bucket"
+    assert result["valid_buckets"] == list(core.BUCKETS)
+    assert result["closest"] in core.BUCKETS
+    packet = core.start_task("fix prod tls", already_classified_bucket="heavy-opsx")
+    assert packet["error"] == "unknown_bucket"
