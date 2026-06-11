@@ -112,6 +112,9 @@ def _result_summary(result: Any) -> dict[str, Any]:
         out["checklist_count"] = len(result["checklist"])
     if "tasks" in result and isinstance(result["tasks"], list):
         out["tasks_count"] = len(result["tasks"])
+    if isinstance(result.get("override"), dict):
+        out["override_from"] = result["override"].get("from")
+        out["override_to"] = result["override"].get("to")
     if "delegation_hint" in result and isinstance(result["delegation_hint"], dict):
         tasks = result["delegation_hint"].get("tasks")
         if isinstance(tasks, list):

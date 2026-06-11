@@ -67,6 +67,11 @@ def build_report(rows: list[dict[str, Any]], malformed: int, calls_path: Path) -
     tools = Counter(row.get("tool", "unknown") for row in rows)
     buckets = Counter(row.get("bucket") for row in rows if row.get("bucket"))
     versions = Counter(row.get("service_version") for row in rows if row.get("service_version"))
+    overrides = Counter(
+        f"{row.get('override_from')}->{row.get('override_to')}"
+        for row in rows
+        if row.get("override_from")
+    )
     ambiguity_count = sum(1 for row in rows if row.get("ambiguity") is True)
     guard_count = sum(1 for row in rows if row.get("reasoning_guard_required") is True)
     delegated_count = sum(1 for row in rows if row.get("should_delegate") is True)
@@ -109,6 +114,7 @@ def build_report(rows: list[dict[str, Any]], malformed: int, calls_path: Path) -
     lines.extend(_counter_table("Tools", tools))
     lines.extend(_counter_table("Buckets", buckets))
     lines.extend(_counter_table("Errors", errors))
+    lines.extend(_counter_table("Classifier overrides (mine these into evals/golden.jsonl)", overrides))
     lines.extend(_counter_table("Service versions", versions))
     lines.extend(["### Slowest calls", "", "| Tool | Duration ms | Success | Bucket | Version |", "|---|---:|---|---|---|"])
     for row in slowest:

@@ -53,3 +53,15 @@ def test_health_stats_include_version_and_counters(tmp_path, monkeypatch):
     assert stats["process_service_version"]
     assert stats["current_source_version"]
     assert stats["metrics_path"].endswith("calls.jsonl")
+
+
+def test_record_call_logs_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(metrics, "CALLS_PATH", tmp_path / "calls.jsonl")
+
+    result = {"bucket": "research", "override": {"from": "script", "to": "research"}}
+    metrics.record_call("start_task", time.perf_counter(), True, args={"prompt": "x"}, result=result)
+
+    event = json.loads((tmp_path / "calls.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert event["override_from"] == "script"
+    assert event["override_to"] == "research"

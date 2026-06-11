@@ -265,6 +265,8 @@ def test_start_task_override_preserves_prompt_derived_risk(tmp_path, monkeypatch
 
     assert packet["bucket"] == "light_ops"
     assert packet["bucket_decision"]["selected"] == "light_ops"
+    assert packet["override"]["to"] == "light_ops"
+    assert packet["override"]["from"] in core.BUCKETS
     assert packet["obsidian_required"] is True
     assert packet["reasoning_guard_required"] is True
     assert "workflow-light-ops-contract" in packet["required_skills"]

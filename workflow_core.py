@@ -842,6 +842,8 @@ def start_task(
         "finish_requirements": _finish_requirements(bucket, finish),
         "suggested_note_path": finish.get("suggested_note_path"),
     }
+    if "override" in classification:
+        packet["override"] = classification["override"]
     if fields is not None:
         requested = [field for field in fields if field in packet]
         return {field: packet[field] for field in requested}
