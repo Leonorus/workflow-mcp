@@ -8,11 +8,11 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>/Users/filipp.vysokov/.hermes/scheduled-tasks/workflow-mcp/run.sh</string>
+    <string>/Users/filipp.vysokov/Projects/workflow-mcp/run.sh</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/filipp.vysokov</string>
+  <string>/Users/filipp.vysokov/Projects/workflow-mcp</string>
 
   <key>EnvironmentVariables</key>
   <dict>
@@ -40,9 +40,9 @@
   <integer>60</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/filipp.vysokov/.hermes/scheduled-tasks/workflow-mcp/logs/stdout.log</string>
+  <string>/Users/filipp.vysokov/Projects/workflow-mcp/logs/stdout.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/filipp.vysokov/.hermes/scheduled-tasks/workflow-mcp/logs/stderr.log</string>
+  <string>/Users/filipp.vysokov/Projects/workflow-mcp/logs/stderr.log</string>
 </dict>
 </plist>

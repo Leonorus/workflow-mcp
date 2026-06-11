@@ -32,15 +32,16 @@ plutil -lint com.filipp.hermes-workflow-mcp.plist
 
 ## Deploy
 
-The repo is the source of truth; launchd runs the live install at
-`~/.hermes/scheduled-tasks/workflow-mcp/`:
+launchd (`com.filipp.hermes-workflow-mcp`) runs `run.sh` directly from this
+checkout — no install/copy step. After changing service code:
 
 ```bash
-rsync -a --delete --exclude='logs/' --exclude='__pycache__/' --exclude='.git/' \
-  ~/Projects/workflow-mcp/ ~/.hermes/scheduled-tasks/workflow-mcp/
 launchctl kickstart -k "gui/$(id -u)/com.filipp.hermes-workflow-mcp"
 curl -fsS http://127.0.0.1:8813/health   # expect tools:3 and the repo HEAD sha
 ```
+
+If the plist itself changed, re-copy it to `~/Library/LaunchAgents/` and
+bootout/bootstrap instead of kickstart. Telemetry lives in `logs/` (gitignored).
 
 Never reload launchd before tests/eval/smoke pass. Open agent sessions cache
 tool schemas until restarted.

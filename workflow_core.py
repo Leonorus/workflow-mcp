@@ -1020,7 +1020,7 @@ def _required_checks_for_files(changed_files: list[str]) -> list[dict[str, str]]
         add("codex_config", "codex mcp list and codex mcp get for changed MCP servers", "Codex MCP config changed")
     if any("workflow-mcp" in path for path in changed_files):
         add("workflow_smoke", "workflow-mcp smoke.py and direct MCP smoke", "Workflow MCP changed")
-        add("surface_validation", "cmp/diff live ~/.hermes/scheduled-tasks/workflow-mcp vs source repo ~/Projects/workflow-mcp", "Workflow surfaces changed")
+        add("surface_restart", "launchctl kickstart com.filipp.hermes-workflow-mcp and check /health version", "Workflow MCP runs from this repo; restart to load changes")
     if any("README" in path or "AGENTS.md" in path or "/docs/" in path for path in changed_files):
         add("docs_review", "review docs commands and paths", "Documentation changed")
     return checks
@@ -1035,7 +1035,7 @@ def _command_covers_check(command: str, check_key: str) -> bool:
         "launchctl_print": ("launchctl print",),
         "codex_config": ("codex mcp list", "codex mcp get"),
         "workflow_smoke": ("smoke.py", "call_tool('start_task'", 'call_tool("start_task"'),
-        "surface_validation": ("cmp -s", "diff --check", "rsync -n", "rsync --dry-run"),
+        "surface_restart": ("kickstart", "8813/health"),
         "docs_review": ("readme", "docs", "documentation"),
     }
     return any(token in c for token in matchers.get(check_key, (check_key,)))
@@ -1101,7 +1101,7 @@ def finish_checklist(
             "For loaded jobs, verify launchctl print for the specific label and inspect task-local logs.",
         ])
     if any("codex-workflow" in path or "classify-task-reminder" in path or "obsidian-index" in path or "workflow-mcp" in path for path in changed_files):
-        checklist.append("Run workflow-surface validation: live/mirror comparisons, hook syntax/checks where relevant, and git diff --check.")
+        checklist.append("Run workflow-surface checks: hook syntax where relevant, git diff --check, and kickstart + /health version probe for workflow-mcp changes.")
     if not commands_run and bucket != "trivia":
         checklist.append("Before final response, add at least one targeted verification command or explicitly document why none exists.")
 

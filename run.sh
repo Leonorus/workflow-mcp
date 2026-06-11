@@ -4,10 +4,11 @@ set -e
 set -u
 set -o pipefail
 
-TASK_NAME="workflow-mcp"
+# Runs in place from the repo checkout; TASK_DIR follows this script's location.
+TASK_DIR="${0:A:h}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 ENV_FILE="${HERMES_ENV_FILE:-$HERMES_HOME/.env}"
-LOG_DIR="$HERMES_HOME/scheduled-tasks/$TASK_NAME/logs"
+LOG_DIR="$TASK_DIR/logs"
 PYTHON="${HERMES_WORKFLOW_MCP_PYTHON:-$HERMES_HOME/hermes-agent/venv/bin/python}"
 HOST="${HERMES_WORKFLOW_MCP_HOST:-127.0.0.1}"
 PORT="${HERMES_WORKFLOW_MCP_PORT:-8813}"
@@ -45,4 +46,4 @@ export OBSIDIAN_VAULT_PATH="${OBSIDIAN_VAULT_PATH:-$HOME/Obsidian/Work}"
 export PYTHONUNBUFFERED=1
 
 log "Starting Workflow MCP host=$HOST port=$PORT python=$PYTHON"
-exec "$PYTHON" "$HERMES_HOME/scheduled-tasks/$TASK_NAME/server.py"
+exec "$PYTHON" "$TASK_DIR/server.py"

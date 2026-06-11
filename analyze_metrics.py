@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 TASK_DIR = Path(__file__).resolve().parent
-DEFAULT_CALLS = Path.home() / ".hermes/scheduled-tasks/workflow-mcp/logs/calls.jsonl"
+DEFAULT_CALLS = Path.home() / "Projects/workflow-mcp/logs/calls.jsonl"
 DEFAULT_REPORT_DIR = Path.home() / "Obsidian/Work/Daily/Lint"
 
 

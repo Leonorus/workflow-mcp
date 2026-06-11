@@ -333,7 +333,7 @@ def test_finish_checklist_rules():
     complete = core.finish_checklist(
         "script",
         changed_files=["scheduled-tasks/workflow-mcp/server.py", "scheduled-tasks/workflow-mcp/com.filipp.hermes-workflow-mcp.plist"],
-        commands_run=["pytest", "py_compile", "smoke.py", "plutil -lint", "launchctl print", "cmp -s live mirror"],
+        commands_run=["pytest", "py_compile", "smoke.py", "plutil -lint", "launchctl print", "launchctl kickstart gui/501/com.filipp.hermes-workflow-mcp", "curl -fsS http://127.0.0.1:8813/health"],
         findings="workflow mcp complete",
         repo="hermes-config",
         skills_updated=["codex-workflow"],
